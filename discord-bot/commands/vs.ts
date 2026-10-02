@@ -136,7 +136,8 @@ function ayarlariYukle(): Kasa[] {
             const item = itemler.get(s.item);
             if (!item) throw hata(`"${s.item}" itemler.json'da yok`);
             if (!(s.sans > 0)) throw hata(`"${s.item}" şansı 0'dan büyük olmalı`);
-            return { item, agirlik: Math.round(s.sans * 10000) };
+            // 1/1.000.000 yüzde hassasiyet: 1/30.000 gibi çok küçük şanslar da tam karşılanır
+            return { item, agirlik: Math.round(s.sans * 1_000_000) };
         });
         const toplamSans = k.icerik.reduce((t, s) => t + s.sans, 0);
         if (Math.abs(toplamSans - 100) > 0.01) {
@@ -1479,8 +1480,13 @@ function kasaOzeti(kasalar: Kasa[]): string {
     return gruplar.map(g => `**${g.adet}×** ${g.kasa.emoji} ${g.kasa.ad}`).join(' → ');
 }
 
-// "%0.1" gibi: gereksiz sıfırlar olmadan
-const yuzde = (kasa: Kasa, seviye: number) => `%${parseFloat(kasa.nadirlikSansi[seviye].toFixed(2))}`;
+// "%12.5", "%0.35" ya da çok küçük şanslarda "1/33.875"
+function yuzde(kasa: Kasa, seviye: number): string {
+    const p = kasa.nadirlikSansi[seviye];
+    if (p >= 1) return `%${parseFloat(p.toFixed(1))}`;
+    if (p >= 0.01) return `%${parseFloat(p.toFixed(2))}`;
+    return `1/${sayi(Math.round(100 / p))}`;
+}
 
 function kurulumBilesenleri(kasaSayisi: number): Bilesenler {
     const dolu = kasaSayisi >= MAX_KASA;
@@ -1492,7 +1498,9 @@ function kurulumBilesenleri(kasaSayisi: number): Bilesenler {
             label: `${k.ad} — ${k.fiyat} DL`,
             value: k.id,
             emoji: k.emoji,
-            description: `Efsanevi ${yuzde(k, 4)} • Destansı ${yuzde(k, 3)} • Gizemli ${yuzde(k, 2)}`
+            // Sadece bu kasada çıkabilen nadirlikler, en değerliden başlayarak (Discord sınırı 100 karakter)
+            description: [4, 3, 2, 1, 0].filter(n => k.nadirlikSansi[n] > 0).slice(0, 3)
+                .map(n => `${NADIRLIKLER[n].ad} ${yuzde(k, n)}`).join(' • ').slice(0, 100)
         })));
 
     const butonlar = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(

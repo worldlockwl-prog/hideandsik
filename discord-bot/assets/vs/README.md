@@ -30,57 +30,71 @@ Görseli değiştirmek için `itemler/` içindeki PNG'nin üzerine aynı isimle 
 Kare, şeffaf arka planlı (örn. 256×256) PNG'ler en iyi sonucu verir. Dosya bulunamazsa bot
 çökmez: konsola uyarı yazar ve nadirlik renginde bir taş ikonu çizer.
 
-## 2) Kasalar — `kasalar/<kasa>.json`
+## 2) Kasalar — otomatik oluşturucu (önerilen)
 
-Klasördeki her `.json` bir kasadır; menüde fiyata göre sıralanır. Yeni kasa eklemek için
-bir dosyayı kopyalayıp `id`'sini değiştirmen yeterli (slash komutunu yeniden kaydetmen gerekir).
+Kasa içerikleri ve fiyatları elle yazılmaz, **algoritma hesaplar**:
+
+```
+node araclar/kasalari-olustur.js
+```
+
+Bu komut `araclar/kasa-tasarimi.json` + `assets/vs/itemler.json` dosyalarını okuyup
+`assets/vs/kasalar/*.json` dosyalarını üretir ve bir özet tablo basar (fiyat, kâr şansı,
+efsanevi şansı...). **Item değerlerini değiştirdikten sonra bu komutu tekrar çalıştır**, sonra
+botu yeniden başlat.
+
+### Algoritma
+
+1. Tasarımda her nadirliğin çıkma şansı verilir; biri `"dolgu"` olur ve kalan şansı alır.
+2. Bir nadirliğin içinde item şansı **değeriyle ters orantılı**: aynı nadirlikte 1.000 DL'lik
+   item, 100 DL'liğe göre 10 kat daha nadir çıkar. (`"esitlik": 0` yaparsan hepsi eşit şanslı olur.)
+3. Kasanın ortalama item değeri hesaplanır, **fiyat = ortalama / rtp**, sonra yuvarlak sayıya çekilir.
+4. Yuvarlamadan sonra RTP tam tutsun diye dolgu dışı şanslar aynı oranda hafifçe ölçeklenir.
+
+### Tasarım dosyası (`araclar/kasa-tasarimi.json`)
 
 ```json
+"rtp": 0.93,
 {
-  "id": "bronz",
-  "ad": "Bronz Kasa",
-  "emoji": "🥉",
-  "fiyat": 50,
-  "gorunum": {"renk": "#b4692e", "susleme": "#ffcf40", "alev": ["#fff3b0", "#ff9a1f", "#ff3d00"]},
-  "icerik": [
-    {"item": "siradan_01", "sans": 3.4},
-    {"item": "efsanevi_01", "sans": 0.15},
-    ...
-  ]
+  "id": "elmas", "ad": "Elmas Kasa", "emoji": "💎",
+  "gorunum": {"renk": "#2f9fd0", "susleme": "#e8fdff", "alev": ["#e8fdff", "#4fd8ff", "#1a4dff"]},
+  "sanslar": {"gizemli": "dolgu", "destansi": 70, "efsanevi": 0.15},
+  "filtre": {"gizemli": {"min": 40}, "destansi": {"min": 300}}
 }
 ```
 
-### İçerik ve şanslar
-
-- `icerik`: bu kasadan **çıkabilecek itemler** ve her birinin **yüzde şansı**.
-  Listede olmayan item bu kasadan çıkmaz.
-- `sans` toplamı 100 olmalı. Olmazsa bot konsola uyarı yazar ve oranları 100'e göre ölçekler
-  (yani 2'ye 1 oranında yazdığın iki item yine 2'ye 1 çıkar).
-- Örnek: `{"item": "efsanevi_03", "sans": 0.05}` → bu item her 2000 açılışta ortalama 1 kez çıkar.
-
-### Görünüm
-
 | Alan | Açıklama |
 |---|---|
-| `renk` | Sandık gövdesinin rengi |
-| `susleme` | Metal şeritler, kenarlar, kilit |
-| `alev` | Sandığı saran alevin 3 rengi: içten (en parlak) dışa doğru |
-| `gorsel` | (isteğe bağlı) Çizim yerine kendi kasa PNG'n, örn. `"kasalar/bronz.png"` |
+| `rtp` | Ortalama geri dönüş. 0.93 = açılan her 100 DL'den ortalama 93 DL item çıkar, 7 DL kasada kalır. Kasa başına da yazılabilir. |
+| `sanslar` | Nadirlik → yüzde şans. Yazılmayan nadirlik o kasadan hiç çıkmaz. |
+| `filtre` | Nadirlik içinden sadece belirli değer aralığındaki itemleri al: `min`, `max`, `haric: ["id"]` |
+| `fiyat` | (isteğe bağlı) Fiyatı sabitlemek istersen yaz; algoritma şansları bu fiyata göre ayarlar. |
+| `gorunum` | Sandığın gövde/süsleme rengi ve 3 renkli alevi (`#rrggbb`). İsteğe bağlı `gorsel`: kendi kasa PNG'n. |
 
-Renkler `#rrggbb` biçiminde olmalı.
+Daha cömert bir kasa için `rtp`'yi yükselt; daha çok "büyük vurgun" hissi için yüksek
+nadirliklerin şansını artır (fiyat otomatik yükselir).
+
+### Elle düzenleme
+
+İstersen `assets/vs/kasalar/<kasa>.json` dosyalarını elle de düzenleyebilirsin: `icerik` listesi
+o kasadan çıkabilecek itemleri ve her birinin yüzde şansını içerir. Ama oluşturucuyu tekrar
+çalıştırırsan elle yaptığın değişikliklerin üzerine yazılır.
 
 ## Kâr/zarar kontrolü
 
 Bot açılırken her kasa için konsola şunu yazar:
 
 ```
-[vs] Bronz Kasa (50 DL, 72 item) ortalama geri dönüş: %95.0
+[vs] Elmas Kasa (600 DL, 39 item) ortalama geri dönüş: %93.0
 ```
 
-Bu, kasanın fiyatına göre ortalama ne kadar item değeri çıktığıdır. %100'ün altı kasanın
-(senin) uzun vadede kazandığı anlamına gelir. Varsayılan kasaların hepsi %95'e ayarlı.
-Şansları ya da item değerlerini değiştirdikten sonra bu satıra bak; %100'ü geçerse yanında
+%100'ün altı kasanın (senin) uzun vadede kazandığı anlamına gelir; %100'ü geçerse yanında
 uyarı çıkar.
+
+**Jackpot riski:** efsanevi itemler 50.000–100.000 DL. Uzun vadede kasa yine kârlıdır ama tek
+bir efsanevi düşüşü çok büyük bir ödemedir (ör. Efsane Kasa'da her ~287 açılışta bir).
+Ekonomin bu kadar büyük tek seferlik ödemeleri kaldıramıyorsa efsanevi değerlerini düşür ya da
+tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 
 ## Animasyon hızı
 
