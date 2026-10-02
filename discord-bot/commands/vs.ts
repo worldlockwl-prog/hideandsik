@@ -116,9 +116,10 @@ const KURULUM_SURESI = 90_000;   // kurucu bu süre boyunca hiçbir şeye basmaz
 const LOBI_SURESI = 120_000;     // bu sürede rakip katılmazsa battle iptal + iade
 
 // Tur başına iki kare: kutu sallanıyor -> kutu açıldı. Süreler mesaj düzenleme süresini de
-// kapsar (düzenleme 400ms sürdüyse sadece kalan kadar beklenir), yani tur ~2-2.5 sn.
+// kapsar (düzenleme 400ms sürdüyse sadece kalan kadar beklenir), yani tur ~4 sn.
+// Hızlandırmak/yavaşlatmak için sadece bu sayıları değiştir (milisaniye).
 function kareSureleri(kasaSayisi: number): { sallanma: number; acilis: number } {
-    return kasaSayisi > 5 ? { sallanma: 800, acilis: 1200 } : { sallanma: 900, acilis: 1500 };
+    return kasaSayisi > 5 ? { sallanma: 1300, acilis: 2100 } : { sallanma: 1600, acilis: 2600 };
 }
 
 // --- ZIRH 1: AYNI ANDA TEK BATTLE (hem kurucu hem rakip için) ---
@@ -174,14 +175,14 @@ void gorselleriHazirla(HAVUZ.flat(), KASALAR);
 // ==================================================
 const GENISLIK = 1000;
 const YUKSEKLIK = 620;
-const PANEL_W = 450;
-const PANEL_X: [number, number] = [25, 525];
+const PANEL_W = 460;
+const PANEL_X: [number, number] = [14, 526];
 // Kurulum/lobi ekranı
-const PANEL_Y = 125;
-const PANEL_H = 420;
+const PANEL_Y = 136;
+const PANEL_H = 408;
 // Battle/sonuç ekranı: üstteki kasa şeridi yerine ince ilerleme çubuğu var, paneller daha büyük
-const B_PANEL_Y = 70;
-const B_PANEL_H = 480;
+const B_PANEL_Y = 72;
+const B_PANEL_H = 474;
 const OYUNCU_RENKLERI: [string, string] = ['#2469ff', '#ff122a'];
 
 interface OyuncuGorunumu {
@@ -514,15 +515,15 @@ function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: numb
 function cizUstSerit(ctx: CanvasRenderingContext2D, d: CizimDurumu) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 20px Arial';
+    ctx.font = 'bold 28px Arial';
     ctx.fillStyle = '#e8e9ee';
-    ctx.fillText('CASE BATTLE', GENISLIK / 2, 24);
+    ctx.fillText('CASE BATTLE', GENISLIK / 2, 26);
 
     const n = d.kasalar.length;
-    const kutuW = 78;
-    const kutuH = 60;
-    const bosluk = 10;
-    const kutuY = 48;
+    const kutuW = 88;
+    const kutuH = 72;
+    const bosluk = 8;
+    const kutuY = 52;
 
     if (n === 0) {
         yuvarlakYol(ctx, GENISLIK / 2 - 200, kutuY, 400, kutuH, 12);
@@ -531,7 +532,7 @@ function cizUstSerit(ctx: CanvasRenderingContext2D, d: CizimDurumu) {
         ctx.lineWidth = 2;
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.font = 'bold 18px Arial';
+        ctx.font = 'bold 24px Arial';
         ctx.fillStyle = '#6b6f7c';
         ctx.fillText('Menüden kasa ekle', GENISLIK / 2, kutuY + kutuH / 2);
         return;
@@ -545,11 +546,11 @@ function cizUstSerit(ctx: CanvasRenderingContext2D, d: CizimDurumu) {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#ffffff';
-        ctx.font = '26px "Segoe UI Emoji", Arial';
-        ctx.fillText(kasa.emoji, sx + kutuW / 2, kutuY + 24);
-        ctx.font = 'bold 13px Arial';
+        ctx.font = '32px "Segoe UI Emoji", Arial';
+        ctx.fillText(kasa.emoji, sx + kutuW / 2, kutuY + 28);
+        ctx.font = 'bold 16px Arial';
         ctx.fillStyle = '#b3b5c4';
-        ctx.fillText(`${sayi(kasa.fiyat)} DL`, sx + kutuW / 2, kutuY + 48);
+        ctx.fillText(`${sayi(kasa.fiyat)} DL`, sx + kutuW / 2, kutuY + 58);
     }
 }
 
@@ -558,22 +559,22 @@ function cizBattleBasligi(ctx: CanvasRenderingContext2D, d: CizimDurumu) {
     const n = d.kasalar.length;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 24px Arial';
+    ctx.font = 'bold 32px Arial';
     ctx.fillStyle = '#ffffff';
     const baslik = d.asama === 'bitti'
         ? 'CASE BATTLE  •  SONUÇ'
         : `TUR ${d.aktifTur + 1}/${n}  •  ${d.kasalar[d.aktifTur].ad.toLocaleUpperCase('tr-TR')}`;
-    ctx.fillText(baslik, GENISLIK / 2, 24);
+    ctx.fillText(baslik, GENISLIK / 2, 26);
     if (d.asama === 'bitti') return; // sonuçta KAZANDI/KAYBETTİ etiketleri bu alana taşıyor
 
-    const cubukW = 600;
+    const cubukW = 700;
     const bosluk = 6;
     const parcaW = (cubukW - (n - 1) * bosluk) / n;
     for (let k = 0; k < n; k++) {
         const px = GENISLIK / 2 - cubukW / 2 + k * (parcaW + bosluk);
         const aktif = d.asama === 'battle' && k === d.aktifTur;
         const acildi = k < d.aktifTur;
-        neonKutu(ctx, px, 46, parcaW, 8, 4, aktif ? '#ffffff' : (acildi ? '#6b6f7c' : '#22242c'), aktif ? '#ffffff' : null, 12);
+        neonKutu(ctx, px, 50, parcaW, 10, 5, aktif ? '#ffffff' : (acildi ? '#6b6f7c' : '#22242c'), aktif ? '#ffffff' : null, 12);
     }
 }
 
@@ -590,13 +591,13 @@ function cizBeklemePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 
 
     if (oyuncu) {
         neonKutu(ctx, x, y, PANEL_W, PANEL_H, 22, '#111218', renk, 18);
-        cizAvatar(ctx, oyuncu, cx, y + 140, 64, renk);
-        ctx.font = 'bold 28px Arial';
+        cizAvatar(ctx, oyuncu, cx, y + 130, 84, renk);
+        ctx.font = 'bold 38px Arial';
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
-        ctx.fillText(kisalt(ctx, oyuncu.isim, PANEL_W - 60), cx, y + 245);
-        if (d.asama === 'kurulum') cizEtiket(ctx, 'KASALARI SEÇİYOR', cx, y + 305, '#ffb300');
-        else cizEtiket(ctx, 'HAZIR', cx, y + 305, '#12ff5e');
+        ctx.fillText(kisalt(ctx, oyuncu.isim, PANEL_W - 50), cx, y + 262);
+        if (d.asama === 'kurulum') cizEtiket(ctx, 'KASALARI SEÇİYOR', cx, y + 330, '#ffb300', 24);
+        else cizEtiket(ctx, 'HAZIR', cx, y + 330, '#12ff5e', 24);
         return;
     }
 
@@ -610,20 +611,20 @@ function cizBeklemePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(cx, y + 140, 64, 0, Math.PI * 2);
+    ctx.arc(cx, y + 130, 84, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.font = 'bold 64px Arial';
+    ctx.font = 'bold 84px Arial';
     ctx.fillStyle = '#3a3d4a';
-    ctx.fillText('?', cx, y + 143);
+    ctx.fillText('?', cx, y + 134);
 
-    ctx.font = 'bold 26px Arial';
+    ctx.font = 'bold 34px Arial';
     ctx.fillStyle = '#8b8f9c';
-    ctx.fillText('RAKİP BEKLENİYOR', cx, y + 245);
-    ctx.font = '18px Arial';
+    ctx.fillText('RAKİP BEKLENİYOR', cx, y + 262);
+    ctx.font = '23px Arial';
     ctx.fillStyle = '#5c606d';
-    ctx.fillText(d.asama === 'lobi' ? 'Katılmak için ⚔️ Katıl butonuna bas' : 'Battle henüz açılmadı', cx, y + 285);
+    ctx.fillText(d.asama === 'lobi' ? 'Katılmak için ⚔️ Katıl butonuna bas' : 'Battle henüz açılmadı', cx, y + 312);
 }
 
 // Kutu açılma sahnesi (oyuncunun kendi alanı)
@@ -638,7 +639,7 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
     ctx.clip();
 
     if (sahne.durum === 'sallaniyor') {
-        const kutuY = y + h * 0.56;
+        const kutuY = y + h * 0.63;
         const glow = ctx.createRadialGradient(cx, kutuY, 10, cx, kutuY, w * 0.5);
         glow.addColorStop(0, oyuncuRengi + '55');
         glow.addColorStop(1, oyuncuRengi + '00');
@@ -651,7 +652,7 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
         ctx.lineCap = 'round';
         for (const yon of [-1, 1]) {
             for (let k = 0; k < 3; k++) {
-                const r = 112 + k * 18;
+                const r = 128 + k * 20;
                 ctx.globalAlpha = 0.8 - k * 0.25;
                 ctx.beginPath();
                 ctx.arc(cx, kutuY, r, yon === -1 ? Math.PI - 0.35 : -0.35, yon === -1 ? Math.PI + 0.35 : 0.35);
@@ -661,19 +662,19 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
         ctx.globalAlpha = 1;
         ctx.lineCap = 'butt';
 
-        cizKutu(ctx, sahne.kasa, cx, kutuY, 180, index === 0 ? -0.11 : 0.11, false, '#ffffff');
-        cizParilti(ctx, cx - 95, kutuY - 85, 10, '#ffffff');
-        cizParilti(ctx, cx + 100, kutuY - 60, 7, '#ffffff');
-        cizParilti(ctx, cx + 70, kutuY - 105, 5, '#ffffff');
+        cizKutu(ctx, sahne.kasa, cx, kutuY, 205, index === 0 ? -0.11 : 0.11, false, '#ffffff');
+        cizParilti(ctx, cx - 115, kutuY - 100, 12, '#ffffff');
+        cizParilti(ctx, cx + 120, kutuY - 70, 9, '#ffffff');
+        cizParilti(ctx, cx + 85, kutuY - 125, 6, '#ffffff');
 
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = 'bold 18px Arial';
+        ctx.font = 'bold 24px Arial';
         ctx.fillStyle = '#c9cbd6';
-        ctx.fillText('KASA AÇILIYOR...', cx, y + 28);
+        ctx.fillText('KASA AÇILIYOR...', cx, y + 30);
     } else {
         const item = sahne.item;
-        const itemY = y + h * 0.42;
+        const itemY = y + h * 0.47;
         // Nadirlik yükseldikçe efekt büyüyor: Sıradan sade, Efsanevi tam ışık şöleni
         const guc = [0, 0.3, 0.45, 0.7, 1][item.seviye];
         const glow = ctx.createRadialGradient(cx, itemY, 10, cx, itemY, w * 0.55);
@@ -683,16 +684,16 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
         ctx.fillRect(x, y, w, h);
         if (guc > 0) cizIsinlar(ctx, cx, itemY, w * 0.62, item.renk, guc);
 
-        cizKutu(ctx, sahne.kasa, cx, y + h - 42, 120, 0, true, item.renk);
-        cizItemGorseli(ctx, item, cx, itemY, 140, true);
+        cizKutu(ctx, sahne.kasa, cx, y + h - 46, 140, 0, true, item.renk);
+        cizItemGorseli(ctx, item, cx, itemY, 175, true);
 
         if (item.seviye >= 3) {
-            cizParilti(ctx, cx - 105, itemY - 50, 11, item.renk);
-            cizParilti(ctx, cx + 110, itemY - 20, 8, '#ffffff');
-            cizParilti(ctx, cx + 80, itemY + 60, 6, item.renk);
-            cizParilti(ctx, cx - 85, itemY + 55, 7, '#ffffff');
+            cizParilti(ctx, cx - 125, itemY - 55, 13, item.renk);
+            cizParilti(ctx, cx + 130, itemY - 25, 10, '#ffffff');
+            cizParilti(ctx, cx + 100, itemY + 70, 7, item.renk);
+            cizParilti(ctx, cx - 105, itemY + 65, 8, '#ffffff');
         }
-        cizEtiket(ctx, NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR'), cx, y + 26, item.renk, 16);
+        cizEtiket(ctx, NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR'), cx, y + 30, item.renk, 20);
     }
     ctx.restore();
 }
@@ -718,28 +719,14 @@ function cizItemKarti(ctx: CanvasRenderingContext2D, item: KasaItemi, x: number,
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if (isimli) {
-        ctx.font = 'bold 12px Arial';
+        ctx.font = 'bold 15px Arial';
         ctx.fillStyle = '#c9cbd6';
         ctx.fillText(kisalt(ctx, item.ad, w - 8), x + w / 2, y + h * 0.7);
     }
     const metin = `${sayi(item.deger)} DL`;
-    sigdirFont(ctx, metin, w - 8, 14, 9);
+    sigdirFont(ctx, metin, w - 8, isimli ? 19 : 17, 10);
     ctx.fillStyle = '#ffffff';
     ctx.fillText(metin, x + w / 2, y + h * (isimli ? 0.86 : 0.82));
-}
-
-function cizBosYuva(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
-    yuvarlakYol(ctx, x, y, w, h, 8);
-    ctx.setLineDash([5, 5]);
-    ctx.strokeStyle = '#2a2c36';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.font = `bold ${Math.floor(h * 0.4)}px Arial`;
-    ctx.fillStyle = '#2a2c36';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('?', x + w / 2, y + h / 2 + 1);
 }
 
 function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0 | 1) {
@@ -765,18 +752,18 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
     }
 
     // Başlık: avatar + isim + toplam değer
-    cizAvatar(ctx, oyuncu, x + 48, y + 46, 28, renk);
+    cizAvatar(ctx, oyuncu, x + 52, y + 52, 34, renk);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
-    ctx.font = 'bold 24px Arial';
+    ctx.font = 'bold 30px Arial';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(kisalt(ctx, oyuncu.isim, 170), x + 88, y + 46);
+    ctx.fillText(kisalt(ctx, oyuncu.isim, 160), x + 98, y + 52);
     ctx.textAlign = 'right';
-    sigdirFont(ctx, `${sayi(oyuncu.toplam)} DL`, 170, 32, 20);
+    sigdirFont(ctx, `${sayi(oyuncu.toplam)} DL`, 175, 40, 24);
     ctx.fillStyle = '#ffd700';
     ctx.shadowColor = '#ffd700';
     ctx.shadowBlur = 12;
-    ctx.fillText(`${sayi(oyuncu.toplam)} DL`, x + w - 22, y + 46);
+    ctx.fillText(`${sayi(oyuncu.toplam)} DL`, x + w - 22, y + 52);
     ctx.shadowBlur = 0;
 
     const sx = x + 15;
@@ -784,44 +771,32 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
 
     if (!bitti && sahne) {
         // Kutu sahnesi + altında çıkan item bilgisi
-        cizSahne(ctx, sahne, sx, y + 86, sw, 270, index);
+        cizSahne(ctx, sahne, sx, y + 102, sw, 282, index);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         if (sahne.durum === 'acildi') {
-            sigdirFont(ctx, sahne.item.ad, sw - 20, 26, 16);
+            sigdirFont(ctx, sahne.item.ad, sw - 20, 34, 18);
             ctx.fillStyle = '#ffffff';
-            ctx.fillText(sahne.item.ad, x + w / 2, y + 382);
-            ctx.font = 'bold 28px Arial';
+            ctx.fillText(sahne.item.ad, x + w / 2, y + 410);
+            ctx.font = 'bold 38px Arial';
             ctx.fillStyle = sahne.item.renk;
             ctx.shadowColor = sahne.item.renk;
             ctx.shadowBlur = 14;
-            ctx.fillText(`+${sayi(sahne.item.deger)} DL`, x + w / 2, y + 414);
+            ctx.fillText(`+${sayi(sahne.item.deger)} DL`, x + w / 2, y + 448);
             ctx.shadowBlur = 0;
         } else {
-            ctx.font = 'bold 26px Arial';
+            ctx.font = 'bold 34px Arial';
             ctx.fillStyle = '#3a3d4a';
-            ctx.fillText('? ? ?', x + w / 2, y + 382);
-            ctx.font = 'bold 28px Arial';
-            ctx.fillText('? DL', x + w / 2, y + 414);
-        }
-
-        // Açılanlar şeridi (küçük)
-        const n = d.kasalar.length;
-        const yuva = 38;
-        const ara = 4;
-        const baslaX = x + w / 2 - (n * yuva + (n - 1) * ara) / 2;
-        for (let k = 0; k < n; k++) {
-            const yx = baslaX + k * (yuva + ara);
-            const item = oyuncu.acilanlar[k];
-            if (item) cizItemKarti(ctx, item, yx, y + 436, yuva, yuva);
-            else cizBosYuva(ctx, yx, y + 436, yuva, yuva);
+            ctx.fillText('? ? ?', x + w / 2, y + 410);
+            ctx.font = 'bold 38px Arial';
+            ctx.fillText('? DL', x + w / 2, y + 448);
         }
     } else {
         // Sonuç: büyük toplam + açılan tüm itemler
         const rx = sx;
-        const ry = y + 86;
+        const ry = y + 102;
         const rw = sw;
-        const rh = 170;
+        const rh = 180;
         ctx.save();
         yuvarlakYol(ctx, rx, ry, rw, rh, 16);
         ctx.fillStyle = '#0a0b0f';
@@ -830,22 +805,22 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
         if (kazandi) cizIsinlar(ctx, rx + rw / 2, ry + rh / 2, rw * 0.6, '#ffd700', 0.45);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        sigdirFont(ctx, `${sayi(oyuncu.toplam)} DL`, rw - 30, 60, 30, '"Arial Black", Arial');
+        sigdirFont(ctx, `${sayi(oyuncu.toplam)} DL`, rw - 30, 76, 34, '"Arial Black", Arial');
         ctx.fillStyle = kazandi ? '#ffd700' : (kaybetti ? '#6b6f7c' : '#ffffff');
         ctx.shadowColor = ctx.fillStyle;
         ctx.shadowBlur = kazandi ? 30 : 0;
         ctx.fillText(`${sayi(oyuncu.toplam)} DL`, rx + rw / 2, ry + rh / 2 - 10);
         ctx.shadowBlur = 0;
-        ctx.font = 'bold 16px Arial';
+        ctx.font = 'bold 20px Arial';
         ctx.fillStyle = '#8b8f9c';
         ctx.fillText('TOPLAM DEĞER', rx + rw / 2, ry + rh - 24);
         ctx.restore();
 
         const satir = Math.ceil(d.kasalar.length / 5);
         const kartW = (sw - 4 * 8) / 5;
-        const kartH = satir === 1 ? 150 : 92;
-        const alanY = y + 270;
-        const alanH = h - 270 - 12;
+        const alanY = y + 294;
+        const alanH = h - 294 - 12;
+        const kartH = satir === 1 ? alanH : (alanH - 8) / 2;
         const kartY = alanY + (alanH - (satir * kartH + (satir - 1) * 8)) / 2;
         for (let k = 0; k < d.kasalar.length; k++) {
             const item = oyuncu.acilanlar[k];
@@ -861,7 +836,7 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
     }
     if (bitti) {
         const etiket = kazandi ? '🏆 KAZANDI' : (kaybetti ? 'KAYBETTİ' : '🤝 BERABERE');
-        cizEtiket(ctx, etiket, x + w / 2, y, kazandi ? '#ffd700' : (kaybetti ? '#ff122a' : '#b3b5c4'));
+        cizEtiket(ctx, etiket, x + w / 2, y, kazandi ? '#ffd700' : (kaybetti ? '#ff122a' : '#b3b5c4'), 22);
     }
 }
 
@@ -874,15 +849,15 @@ function cizVs(ctx: CanvasRenderingContext2D, cy: number) {
     ctx.shadowColor = '#ffffff';
     ctx.shadowBlur = 25;
     ctx.beginPath();
-    ctx.arc(cx, cy, 38, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 48, 0, Math.PI * 2);
     ctx.fillStyle = g;
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.beginPath();
-    ctx.arc(cx, cy, 31, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 40, 0, Math.PI * 2);
     ctx.fillStyle = '#0b0c10';
     ctx.fill();
-    ctx.font = 'bold 26px "Arial Black", Arial';
+    ctx.font = 'bold 34px "Arial Black", Arial';
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -891,12 +866,12 @@ function cizVs(ctx: CanvasRenderingContext2D, cy: number) {
 }
 
 function cizAltYazi(ctx: CanvasRenderingContext2D, metin: string, renk: string) {
-    neonKutu(ctx, 150, 560, 700, 46, 23, 'rgba(0, 0, 0, 0.6)', null);
-    ctx.font = 'bold 22px Arial';
+    neonKutu(ctx, 120, 556, 760, 56, 28, 'rgba(0, 0, 0, 0.6)', null);
+    ctx.font = 'bold 28px Arial';
     ctx.fillStyle = renk;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(kisalt(ctx, metin, 660), GENISLIK / 2, 584);
+    ctx.fillText(kisalt(ctx, metin, 720), GENISLIK / 2, 585);
 }
 
 function battleCiz(d: CizimDurumu): AttachmentBuilder {
