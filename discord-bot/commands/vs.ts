@@ -14,21 +14,46 @@ import {
 } from 'discord.js';
 import { createCanvas, loadImage, Image, CanvasRenderingContext2D } from 'canvas';
 import { randomInt } from 'crypto';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { Command, CommandDeferType } from '../structers/command';
 import { dbManager } from '../db/db';
 import config2 from './config.json'
 
+// gifenc'in (npm i gifenc) TypeScript tip dosyası yok; kullandığımız kısmı burada tanımlıyoruz.
+interface GifEncoder {
+    writeFrame(index: Uint8Array, width: number, height: number, opts?: { palette?: number[][]; delay?: number; repeat?: number }): void;
+    finish(): void;
+    bytes(): Uint8Array;
+}
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const gifenc = require('gifenc') as {
+    GIFEncoder(): GifEncoder;
+    quantize(rgba: Uint8Array | Uint8ClampedArray, maxColors: number): number[][];
+    applyPalette(rgba: Uint8Array | Uint8ClampedArray, palette: number[][]): Uint8Array;
+};
+
 const DL = '<:DL:1381246442089349255>';
 
-// Kasa/item ayarları ve PNG'ler bu klasörde. Bot kök klasöründen çalıştırılıyorsa
-// <bot>/assets/vs/ayarlar.json, <bot>/assets/vs/itemler/*.png şeklinde durmalı.
+// Kasa/item ayarları ve PNG'ler bu klasörde. Bot kök klasöründen çalıştırılıyorsa:
+//   <bot>/assets/vs/itemler.json        -> tüm itemler (ad, nadirlik, değer, PNG)
+//   <bot>/assets/vs/kasalar/*.json      -> her kasa ayrı dosya: fiyat, görünüm, içerik + şanslar
+//   <bot>/assets/vs/itemler/*.png       -> item görselleri
 // Değişiklikler bot yeniden başlatılınca geçerli olur.
 const VS_KLASORU = path.join(process.cwd(), 'assets', 'vs');
 
+// Animasyon zamanlaması. Hızlandırmak/yavaşlatmak için sadece bu sayıları değiştir.
+const ZAMANLAMA = {
+    sallanmaKaresi: 14,      // sandığın sallandığı kare sayısı
+    sallanmaGecikme: 85,     // her sallanma karesinin süresi (ms) -> 14 x 85 ≈ 1.2 sn
+    yukselmeKaresi: 6,       // item'in sandıktan yükseldiği kare sayısı
+    yukselmeGecikme: 65,
+    sonucuGoster: 2600,      // item çıktıktan sonra bir sonraki tura geçmeden bekleme (ms)
+    sonucuGosterKalabalik: 1800 // 5'ten fazla kasalı battle'da aynı bekleme
+};
+
 // ==================================================
-// NADİRLİK / KASA / ITEM TANIMLARI (ayarlar.json'dan)
+// NADİRLİK / ITEM / KASA TANIMLARI (assets/vs'den)
 // ==================================================
 const NADIRLIKLER = [
     { id: 'siradan', ad: 'Sıradan', renk: '#9aa0ab' },
@@ -39,6 +64,7 @@ const NADIRLIKLER = [
 ] as const;
 
 interface KasaItemi {
+    id: string;
     ad: string;
     seviye: number;  // NADIRLIKLER içindeki sıra: 0 Sıradan ... 4 Efsanevi
     renk: string;
@@ -47,94 +73,114 @@ interface KasaItemi {
     resim?: Image | null; // yüklenince dolar, PNG yoksa null (yedek ikon çizilir)
 }
 
+interface KasaGorunumu {
+    renk: string;                    // sandık gövdesi
+    susleme: string;                 // metal şeritler, kenarlar, kilit
+    alev: [string, string, string];  // alevin içten dışa renkleri
+    gorsel?: string;                 // isteğe bağlı: çizim yerine kendi kasa PNG'n
+}
+
 interface Kasa {
     id: string;
     ad: string;
     emoji: string;
     fiyat: number;
-    renk: string;
-    gorsel?: string;
+    gorunum: KasaGorunumu;
     resim?: Image | null;
-    sanslar: number[];   // nadirlik başına şans (yüzdenin 1000 katı, tam sayı)
-    toplamSans: number;
-    rtp: number;         // ortalama geri dönüş (fiyata oranla)
+    icerik: { item: KasaItemi; agirlik: number }[];
+    toplamAgirlik: number;
+    nadirlikSansi: number[]; // nadirlik başına toplam şans (%)
+    rtp: number;             // ortalama geri dönüş (fiyata oranla)
 }
 
-interface AyarDosyasi {
-    kasalar: { id: string; ad: string; emoji: string; fiyat: number; renk?: string; gorsel?: string; sanslar: Record<string, number> }[];
-    itemler: { ad: string; nadirlik: string; deger: number; gorsel: string }[];
-}
-
-function ayarlariYukle(): { kasalar: Kasa[]; havuz: KasaItemi[][] } {
-    const dosya = path.join(VS_KLASORU, 'ayarlar.json');
-    let ham: AyarDosyasi;
+function jsonOku<T>(dosya: string): T {
     try {
-        ham = JSON.parse(readFileSync(dosya, 'utf-8'));
+        return JSON.parse(readFileSync(dosya, 'utf-8')) as T;
     } catch (err) {
         throw new Error(`[vs] ${dosya} okunamadı: ${(err as Error).message}`);
     }
-
-    // Havuz: nadirlik başına item listesi. Kasa önce nadirliği seçer, sonra o nadirlikten eşit şansla bir item.
-    const havuz: KasaItemi[][] = NADIRLIKLER.map(() => []);
-    for (const it of ham.itemler) {
-        const seviye = NADIRLIKLER.findIndex(n => n.id === it.nadirlik);
-        if (seviye === -1) throw new Error(`[vs] "${it.ad}" bilinmeyen nadirlik: ${it.nadirlik}`);
-        if (!(it.deger > 0)) throw new Error(`[vs] "${it.ad}" değeri 0'dan büyük olmalı`);
-        havuz[seviye].push({ ad: it.ad, seviye, renk: NADIRLIKLER[seviye].renk, deger: Math.floor(it.deger), gorsel: it.gorsel });
-    }
-
-    const kasalar = ham.kasalar.map((k): Kasa => {
-        const sanslar = NADIRLIKLER.map(n => Math.round((k.sanslar[n.id] ?? 0) * 1000));
-        const toplamSans = sanslar.reduce((t, s) => t + s, 0);
-        if (toplamSans <= 0) throw new Error(`[vs] ${k.id} kasasının şansları boş`);
-        sanslar.forEach((s, i) => {
-            if (s > 0 && havuz[i].length === 0) throw new Error(`[vs] ${k.id} kasası ${NADIRLIKLER[i].ad} çıkarabiliyor ama havuzda ${NADIRLIKLER[i].ad} item yok`);
-        });
-
-        // Ortalama kazanç = Σ (nadirlik şansı × o nadirlikteki itemlerin ortalama değeri)
-        const ortalama = sanslar.reduce((t, s, i) => s === 0 ? t
-            : t + (s / toplamSans) * (havuz[i].reduce((a, it) => a + it.deger, 0) / havuz[i].length), 0);
-        return {
-            id: k.id, ad: k.ad, emoji: k.emoji, fiyat: k.fiyat, renk: k.renk ?? '#b07a45', gorsel: k.gorsel,
-            sanslar, toplamSans, rtp: ortalama / k.fiyat
-        };
-    });
-
-    // Item değerleri/şanslar değiştirilince kasanın kâra mı zarara mı geçtiği konsoldan görülsün
-    for (const k of kasalar) {
-        const uyari = k.rtp > 1 ? '  ⚠️ %100 üstü: bu kasa uzun vadede para kaybettirir!' : '';
-        console.log(`[vs] ${k.ad} (${k.fiyat} DL) ortalama geri dönüş: %${(k.rtp * 100).toFixed(1)}${uyari}`);
-    }
-    return { kasalar, havuz };
 }
 
-const { kasalar: KASALAR, havuz: HAVUZ } = ayarlariYukle();
+const HEX_RENK = /^#[0-9a-fA-F]{6}$/;
+
+function ayarlariYukle(): Kasa[] {
+    // --- Itemler ---
+    const hamItemler = jsonOku<{ id: string; ad: string; nadirlik: string; deger: number; gorsel?: string }[]>(path.join(VS_KLASORU, 'itemler.json'));
+    const itemler = new Map<string, KasaItemi>();
+    for (const it of hamItemler) {
+        const seviye = NADIRLIKLER.findIndex(n => n.id === it.nadirlik);
+        if (seviye === -1) throw new Error(`[vs] itemler.json: "${it.id}" bilinmeyen nadirlik "${it.nadirlik}"`);
+        if (!(it.deger > 0)) throw new Error(`[vs] itemler.json: "${it.id}" değeri 0'dan büyük olmalı`);
+        if (itemler.has(it.id)) throw new Error(`[vs] itemler.json: "${it.id}" iki kere tanımlı`);
+        itemler.set(it.id, {
+            id: it.id, ad: it.ad, seviye, renk: NADIRLIKLER[seviye].renk,
+            deger: Math.floor(it.deger), gorsel: it.gorsel ?? `itemler/${it.id}.png`
+        });
+    }
+
+    // --- Kasalar: kasalar/ klasöründeki her .json bir kasa ---
+    const kasaKlasoru = path.join(VS_KLASORU, 'kasalar');
+    const kasalar = readdirSync(kasaKlasoru).filter(f => f.endsWith('.json')).map((dosya): Kasa => {
+        const k = jsonOku<{ id: string; ad: string; emoji: string; fiyat: number; gorunum: KasaGorunumu; icerik: { item: string; sans: number }[] }>(path.join(kasaKlasoru, dosya));
+        const hata = (m: string) => new Error(`[vs] kasalar/${dosya}: ${m}`);
+        if (!k.id || !k.ad || !(k.fiyat > 0)) throw hata('id, ad ve fiyat zorunlu');
+        const renkler = [k.gorunum?.renk, k.gorunum?.susleme, ...(k.gorunum?.alev ?? [])];
+        if (renkler.length !== 5 || !renkler.every(r => HEX_RENK.test(r ?? ''))) {
+            throw hata('gorunum.renk, gorunum.susleme ve 3 renkli gorunum.alev "#rrggbb" biçiminde olmalı');
+        }
+        if (!k.icerik?.length) throw hata('icerik boş');
+
+        const icerik = k.icerik.map(s => {
+            const item = itemler.get(s.item);
+            if (!item) throw hata(`"${s.item}" itemler.json'da yok`);
+            if (!(s.sans > 0)) throw hata(`"${s.item}" şansı 0'dan büyük olmalı`);
+            return { item, agirlik: Math.round(s.sans * 10000) };
+        });
+        const toplamSans = k.icerik.reduce((t, s) => t + s.sans, 0);
+        if (Math.abs(toplamSans - 100) > 0.01) {
+            console.warn(`[vs] kasalar/${dosya}: şansların toplamı %${toplamSans.toFixed(2)}, 100'e göre oranlanarak kullanılacak`);
+        }
+        const toplamAgirlik = icerik.reduce((t, s) => t + s.agirlik, 0);
+        const nadirlikSansi = NADIRLIKLER.map((_, i) =>
+            icerik.filter(s => s.item.seviye === i).reduce((t, s) => t + s.agirlik, 0) / toplamAgirlik * 100);
+        const ortalama = icerik.reduce((t, s) => t + s.item.deger * s.agirlik, 0) / toplamAgirlik;
+        return {
+            id: k.id, ad: k.ad, emoji: k.emoji, fiyat: k.fiyat, gorunum: k.gorunum,
+            icerik, toplamAgirlik, nadirlikSansi, rtp: ortalama / k.fiyat
+        };
+    }).sort((a, b) => a.fiyat - b.fiyat);
+
+    if (kasalar.length === 0) throw new Error(`[vs] ${kasaKlasoru} içinde kasa yok`);
+    if (kasalar.length > 25) throw new Error('[vs] Discord menüsü en fazla 25 kasa gösterebilir');
+    const idler = new Set<string>();
+    for (const k of kasalar) {
+        if (idler.has(k.id)) throw new Error(`[vs] "${k.id}" id'li iki kasa var`);
+        idler.add(k.id);
+        // Item değerleri/şanslar değiştirilince kasanın kâra mı zarara mı geçtiği konsoldan görülsün
+        const uyari = k.rtp > 1 ? '  ⚠️ %100 üstü: bu kasa uzun vadede para kaybettirir!' : '';
+        console.log(`[vs] ${k.ad} (${k.fiyat} DL, ${k.icerik.length} item) ortalama geri dönüş: %${(k.rtp * 100).toFixed(1)}${uyari}`);
+    }
+    return kasalar;
+}
+
+const KASALAR = ayarlariYukle();
 const KASA_MAP = new Map(KASALAR.map(k => [k.id, k]));
 
 const MAX_KASA = 10;
 const KURULUM_SURESI = 90_000;   // kurucu bu süre boyunca hiçbir şeye basmazsa kurulum iptal
 const LOBI_SURESI = 120_000;     // bu sürede rakip katılmazsa battle iptal + iade
 
-// Tur başına iki kare: kutu sallanıyor -> kutu açıldı. Süreler, karenin Discord'a ulaştıktan
-// sonra ekranda kalma süresi (mesaj düzenleme süresi bunun üstüne eklenir), tur ~4.5 sn.
-// Hızlandırmak/yavaşlatmak için sadece bu sayıları değiştir (milisaniye).
-function kareSureleri(kasaSayisi: number): { sallanma: number; acilis: number } {
-    return kasaSayisi > 5 ? { sallanma: 1300, acilis: 2100 } : { sallanma: 1600, acilis: 2600 };
-}
-
 // --- ZIRH 1: AYNI ANDA TEK BATTLE (hem kurucu hem rakip için) ---
 const aktifOynayanlar = new Set<string>();
 
 function itemCek(kasa: Kasa): KasaItemi {
     // Tower'daki gibi kriptografik üreteç: sonuç V8'in PRNG'sinden tahmin edilemez.
-    let r = randomInt(kasa.toplamSans);
-    let seviye = 0;
-    while (r >= kasa.sanslar[seviye]) {
-        r -= kasa.sanslar[seviye];
-        seviye++;
+    let r = randomInt(kasa.toplamAgirlik);
+    for (const s of kasa.icerik) {
+        if (r < s.agirlik) return s.item;
+        r -= s.agirlik;
     }
-    const liste = HAVUZ[seviye];
-    return liste[randomInt(liste.length)];
+    return kasa.icerik[kasa.icerik.length - 1].item;
 }
 
 function toplamFiyat(kasalar: Kasa[]): number {
@@ -146,12 +192,12 @@ function toplamFiyat(kasalar: Kasa[]): number {
 // ==================================================
 const gorselOnbellegi = new Map<string, Promise<Image | null>>();
 
-function gorselYukle(dosya: string, uyar: boolean): Promise<Image | null> {
+function gorselYukle(dosya: string): Promise<Image | null> {
     const tam = path.join(VS_KLASORU, dosya);
     let yukleme = gorselOnbellegi.get(tam);
     if (!yukleme) {
         yukleme = loadImage(tam).catch(() => {
-            if (uyar) console.warn(`[vs] Görsel bulunamadı, yedek ikon kullanılacak: ${tam}`);
+            console.warn(`[vs] Görsel bulunamadı, yedek çizim kullanılacak: ${tam}`);
             return null;
         });
         gorselOnbellegi.set(tam, yukleme);
@@ -162,19 +208,23 @@ function gorselYukle(dosya: string, uyar: boolean): Promise<Image | null> {
 // Çizim senkron olduğu için kullanılacak görseller çizimden önce yüklenip nesneye yazılıyor
 async function gorselleriHazirla(itemler: KasaItemi[], kasalar: Kasa[]) {
     await Promise.all([
-        ...itemler.filter(i => i.resim === undefined).map(async i => { i.resim = await gorselYukle(i.gorsel, true); }),
-        ...kasalar.filter(k => k.resim === undefined).map(async k => { k.resim = k.gorsel ? await gorselYukle(k.gorsel, true) : null; })
+        ...itemler.filter(i => i.resim === undefined).map(async i => { i.resim = await gorselYukle(i.gorsel); }),
+        ...kasalar.filter(k => k.resim === undefined).map(async k => { k.resim = k.gorunum.gorsel ? await gorselYukle(k.gorunum.gorsel) : null; })
     ]);
 }
 
 // Bot açılırken tüm PNG'leri arka planda ısıt; ilk battle'da bekleme olmasın
-void gorselleriHazirla(HAVUZ.flat(), KASALAR);
+void gorselleriHazirla(KASALAR.flatMap(k => k.icerik.map(s => s.item)), KASALAR);
 
 // ==================================================
 // CANVAS ÇİZİM MOTORU
 // ==================================================
+// Tüm çizim 1000x620 mantıksal koordinatta yapılır. Sabit resimler bu boyutta,
+// animasyonlu GIF'ler dosya boyutu küçük kalsın diye %80 ölçekte üretilir
+// (Discord zaten ~550px genişlikte gösteriyor, fark görünmüyor).
 const GENISLIK = 1000;
 const YUKSEKLIK = 620;
+const GIF_OLCEK = 0.8;
 const PANEL_W = 460;
 const PANEL_X: [number, number] = [14, 526];
 // Kurulum/lobi ekranı
@@ -192,10 +242,14 @@ interface OyuncuGorunumu {
     toplam: number;
 }
 
+// Bir oyuncunun kutu açma sahnesinin tek bir karesi
 interface KutuSahnesi {
-    durum: 'sallaniyor' | 'acildi';
     kasa: Kasa;
-    item: KasaItemi; // 'sallaniyor' durumunda çizilmez
+    item: KasaItemi;
+    evre: 'salla' | 'patla' | 'yuksel' | 'son';
+    t: number;    // evre içindeki ilerleme 0..1
+    kare: number; // genel kare sayacı (alev titremesi, kıvılcımlar)
+    faz: number;  // iki oyuncunun sandığı aynı anda aynı yöne sallanmasın
 }
 
 interface CizimDurumu {
@@ -210,6 +264,13 @@ interface CizimDurumu {
 
 // 25700 -> "25.700"
 const sayi = (n: number) => n.toLocaleString('tr-TR');
+const yumusakCikis = (t: number) => 1 - Math.pow(1 - t, 3);
+const geriSekme = (t: number) => 1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2);
+// Kareden kareye aynı kalan "rastgele" sayı (kıvılcım konumları için)
+const sabitRastgele = (n: number) => {
+    const x = Math.sin(n * 127.1) * 43758.5453;
+    return x - Math.floor(x);
+};
 
 // Hex rengi beyaza (oran > 0) ya da siyaha (oran < 0) doğru kaydırır
 function renkTon(hex: string, oran: number): string {
@@ -317,10 +378,11 @@ function cizEtiket(ctx: CanvasRenderingContext2D, metin: string, cx: number, cy:
 }
 
 // Item/kazanan arkasındaki ışık hüzmeleri
-function cizIsinlar(ctx: CanvasRenderingContext2D, cx: number, cy: number, yaricap: number, renk: string, opaklik: number = 1) {
+function cizIsinlar(ctx: CanvasRenderingContext2D, cx: number, cy: number, yaricap: number, renk: string, opaklik: number = 1, donus: number = 0) {
     ctx.save();
     ctx.globalAlpha *= opaklik;
     ctx.translate(cx, cy);
+    ctx.rotate(donus);
     const g = ctx.createRadialGradient(0, 0, 0, 0, 0, yaricap);
     g.addColorStop(0, renk + 'cc');
     g.addColorStop(1, renk + '00');
@@ -352,6 +414,53 @@ function cizParilti(ctx: CanvasRenderingContext2D, x: number, y: number, r: numb
     ctx.restore();
 }
 
+// Sandığın arkasından yükselen alevler + uçuşan kıvılcımlar.
+// Renkler kasanın gorunum.alev ayarından gelir; `kare` değiştikçe alevler titrer.
+function cizAlevler(ctx: CanvasRenderingContext2D, cx: number, tabanY: number, genislik: number, yukseklik: number, alev: [string, string, string], kare: number, faz: number, guc: number) {
+    if (guc <= 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const dil = 9;
+    const katmanlar: [string, number][] = [[alev[2], 1], [alev[1], 0.72], [alev[0], 0.42]];
+    katmanlar.forEach(([renk, olcek], katman) => {
+        for (let i = 0; i < dil; i++) {
+            const o = i / (dil - 1) - 0.5;
+            const merkezlik = 1 - Math.abs(o) * 1.1;
+            const titreme = 0.7 + 0.3 * Math.abs(Math.sin(kare * 0.9 + i * 1.7 + faz + katman));
+            const h = yukseklik * (0.55 + 0.45 * guc) * Math.max(0.35, merkezlik) * titreme * olcek;
+            if (h < 4) continue;
+            const fw = (genislik / dil) * 2.1 * olcek + 6;
+            const bx = cx + o * genislik * 0.95;
+            const salinim = Math.sin(kare * 0.7 + i * 2.3 + faz) * fw * 0.35;
+            const g = ctx.createLinearGradient(0, tabanY, 0, tabanY - h);
+            g.addColorStop(0, renk + 'ff');
+            g.addColorStop(0.55, renk + 'aa');
+            g.addColorStop(1, renk + '00');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.moveTo(bx - fw / 2, tabanY);
+            ctx.bezierCurveTo(bx - fw / 2, tabanY - h * 0.45, bx - fw * 0.15 + salinim, tabanY - h * 0.75, bx + salinim, tabanY - h);
+            ctx.bezierCurveTo(bx + fw * 0.15 + salinim, tabanY - h * 0.75, bx + fw / 2, tabanY - h * 0.45, bx + fw / 2, tabanY);
+            ctx.closePath();
+            ctx.fill();
+        }
+    });
+
+    // Kıvılcımlar: her biri kendi hızında yukarı süzülüp sönüyor
+    const yol = yukseklik * 1.5;
+    for (let i = 0; i < 16; i++) {
+        const r1 = sabitRastgele(i + faz * 10);
+        const r2 = sabitRastgele(i * 3.7 + faz * 20);
+        const ilerleme = ((kare * (6 + r2 * 6) + r2 * yol) % yol);
+        ctx.globalAlpha = Math.max(0, 1 - ilerleme / yol) * guc;
+        ctx.fillStyle = i % 2 === 0 ? alev[0] : alev[1];
+        ctx.beginPath();
+        ctx.arc(cx + (r1 - 0.5) * genislik * 1.15 + Math.sin(kare * 0.5 + i) * 6, tabanY - ilerleme, 1.5 + r1 * 2.5, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.restore();
+}
+
 // PNG'si olmayan item için nadirlik renginde kesme taş ikonu
 function cizYedekIkon(ctx: CanvasRenderingContext2D, item: KasaItemi, cx: number, cy: number, boyut: number) {
     const r = boyut * 0.45;
@@ -374,14 +483,6 @@ function cizYedekIkon(ctx: CanvasRenderingContext2D, item: KasaItemi, cx: number
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
     ctx.lineWidth = Math.max(1, boyut / 60);
     ctx.stroke();
-    // Yüzey çizgileri
-    ctx.beginPath();
-    ctx.moveTo(cx - r, kus); ctx.lineTo(cx + r, kus);
-    ctx.moveTo(cx - r * 0.55, ust); ctx.lineTo(cx - r * 0.25, kus); ctx.lineTo(cx, cy + r * 0.95);
-    ctx.moveTo(cx + r * 0.55, ust); ctx.lineTo(cx + r * 0.25, kus); ctx.lineTo(cx, cy + r * 0.95);
-    ctx.moveTo(cx - r * 0.25, kus); ctx.lineTo(cx, ust); ctx.lineTo(cx + r * 0.25, kus);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-    ctx.stroke();
     ctx.restore();
 }
 
@@ -402,17 +503,26 @@ function cizItemGorseli(ctx: CanvasRenderingContext2D, item: KasaItemi, cx: numb
     ctx.restore();
 }
 
-// Kasa: PNG'si varsa o, yoksa kasanın renginde çizilmiş sandık. (cx, cy) gövdenin ortası.
-// acik=false: kubbe kapaklı kapalı sandık, kapak aralığından ışık sızar.
-// acik=true : kapak arkaya açılmış (iç yüzü görünür), ağızdan isikRengi'nde ışık yükselir.
-function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: number, boyut: number, aci: number, acik: boolean, isikRengi: string) {
+// Metalik şerit dolgusu (dikey gradyan)
+function metal(ctx: CanvasRenderingContext2D, renk: string, y0: number, y1: number) {
+    const g = ctx.createLinearGradient(0, y0, 0, y1);
+    g.addColorStop(0, renkTon(renk, 0.45));
+    g.addColorStop(0.5, renk);
+    g.addColorStop(1, renkTon(renk, -0.45));
+    return g;
+}
+
+// Kasa: gorunum.gorsel PNG'si varsa o, yoksa kasanın renklerinde çizilmiş süslü sandık.
+// (cx, cy) gövdenin ortası. parlama 0..1: kapak aralığından sızan alev ışığının gücü.
+// acik=true iken kapak arkaya açılmış, ağızdan isikRengi'nde ışık yükseliyor.
+function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: number, boyut: number, aci: number, acik: boolean, isikRengi: string, parlama: number) {
+    const G = kasa.gorunum;
     const w = boyut;
-    const gH = boyut * 0.46;   // gövde yüksekliği
-    const kH = boyut * 0.26;   // kapak yüksekliği
+    const gH = boyut * 0.48;   // gövde yüksekliği
+    const kH = boyut * 0.28;   // kapak yüksekliği
     const ust = -gH / 2;       // gövdenin üst kenarı (yerel koordinat)
-    const ana = kasa.renk;
-    const koyu = renkTon(ana, -0.62);
-    const altin = '#ffcf40';
+    const seritX = [-w * 0.3, w * 0.3];
+    const seritW = w * 0.08;
 
     ctx.save();
     // Zemin gölgesi
@@ -435,14 +545,10 @@ function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: numb
         return;
     }
 
-    // Dikey metal şeritler (kapak + gövde aynı hizada)
-    const seritX = [-w * 0.3, w * 0.3];
-    const seritW = w * 0.075;
-
     if (acik) {
         cizHuzme(ctx, w, ust, isikRengi);
         // Kapağın iç yüzü: gövdenin arkasında dik duran, yukarı doğru hafif daralan levha
-        const kapakUst = ust - kH * 1.6;
+        const kapakUst = ust - kH * 1.5;
         ctx.beginPath();
         ctx.moveTo(-w / 2 + 2, ust);
         ctx.lineTo(-w / 2 + 16, kapakUst + 14);
@@ -452,89 +558,140 @@ function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: numb
         ctx.lineTo(w / 2 - 2, ust);
         ctx.closePath();
         const ic = ctx.createLinearGradient(0, kapakUst, 0, ust);
-        ic.addColorStop(0, renkTon(ana, -0.35));
-        ic.addColorStop(1, renkTon(ana, -0.75));
+        ic.addColorStop(0, renkTon(G.renk, -0.35));
+        ic.addColorStop(1, renkTon(G.renk, -0.75));
         ctx.fillStyle = ic;
         ctx.fill();
-        // İçeriden vuran ışık kapağın alt kısmını aydınlatıyor
         const yansima = ctx.createLinearGradient(0, ust, 0, kapakUst);
         yansima.addColorStop(0, isikRengi + '99');
         yansima.addColorStop(1, isikRengi + '00');
         ctx.fillStyle = yansima;
         ctx.fill();
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = renkTon(ana, 0.15);
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = metal(ctx, G.susleme, kapakUst, ust);
         ctx.stroke();
-        ctx.fillStyle = koyu;
-        for (const sx of seritX) ctx.fillRect(sx * 0.9 - seritW / 2, kapakUst + 3, seritW, ust - kapakUst - 3);
-
         cizAgiz(ctx, w, ust, isikRengi);
     }
 
-    // Gövde
+    // --- Gövde: ahşap tahtalar ---
     const govde = ctx.createLinearGradient(0, ust, 0, gH / 2);
-    govde.addColorStop(0, renkTon(ana, 0.1));
-    govde.addColorStop(1, renkTon(ana, -0.5));
+    govde.addColorStop(0, renkTon(G.renk, 0.12));
+    govde.addColorStop(1, renkTon(G.renk, -0.5));
     yuvarlakYol(ctx, -w / 2, ust, w, gH, 12);
     ctx.fillStyle = govde;
     ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = renkTon(ana, -0.55);
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.lineWidth = 2;
+    for (const oran of [0.36, 0.66]) {
+        ctx.beginPath();
+        ctx.moveTo(-w / 2 + 6, ust + gH * oran);
+        ctx.lineTo(w / 2 - 6, ust + gH * oran);
+        ctx.stroke();
+    }
+    // Metal kenar ve şeritler
+    ctx.fillStyle = metal(ctx, G.susleme, ust, ust + gH * 0.14);
+    ctx.fillRect(-w / 2 + 2, ust, w - 4, gH * 0.14);
+    ctx.fillStyle = metal(ctx, G.susleme, gH / 2 - gH * 0.14, gH / 2);
+    ctx.fillRect(-w / 2 + 2, gH / 2 - gH * 0.14, w - 4, gH * 0.14);
+    for (const sx of seritX) {
+        ctx.fillStyle = metal(ctx, G.susleme, ust, gH / 2);
+        ctx.fillRect(sx - seritW / 2, ust, seritW, gH);
+    }
+    yuvarlakYol(ctx, -w / 2, ust, w, gH, 12);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = metal(ctx, G.susleme, ust, gH / 2);
     ctx.stroke();
-    // Üst ve alt kenar şeridi
-    ctx.fillStyle = koyu;
-    ctx.fillRect(-w / 2 + 3, ust, w - 6, gH * 0.12);
-    ctx.fillRect(-w / 2 + 3, gH / 2 - gH * 0.12, w - 6, gH * 0.12);
-    for (const sx of seritX) ctx.fillRect(sx - seritW / 2, ust, seritW, gH);
     // Köşe perçinleri
-    ctx.fillStyle = altin;
-    for (const px of [-w / 2 + 10, w / 2 - 10]) {
-        for (const py of [ust + gH * 0.3, gH / 2 - gH * 0.25]) {
+    ctx.fillStyle = renkTon(G.susleme, 0.5);
+    for (const px of [-w / 2 + 11, w / 2 - 11]) {
+        for (const py of [ust + gH * 0.32, gH / 2 - gH * 0.3]) {
             ctx.beginPath();
-            ctx.arc(px, py, Math.max(2.5, w * 0.014), 0, Math.PI * 2);
+            ctx.arc(px, py, Math.max(2.5, w * 0.016), 0, Math.PI * 2);
             ctx.fill();
         }
     }
 
     if (!acik) {
-        // Kubbe kapak
-        yuvarlakYol(ctx, -w / 2 - 4, ust - kH, w + 8, kH + 8, kH * 0.7);
+        // --- Kubbe kapak ---
+        yuvarlakYol(ctx, -w / 2 - 5, ust - kH, w + 10, kH + 8, kH * 0.75);
         const kapak = ctx.createLinearGradient(0, ust - kH, 0, ust);
-        kapak.addColorStop(0, renkTon(ana, 0.35));
-        kapak.addColorStop(1, renkTon(ana, -0.15));
+        kapak.addColorStop(0, renkTon(G.renk, 0.3));
+        kapak.addColorStop(1, renkTon(G.renk, -0.25));
         ctx.fillStyle = kapak;
         ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = renkTon(ana, -0.55);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = metal(ctx, G.susleme, ust - kH, ust);
         ctx.stroke();
-        ctx.fillStyle = koyu;
-        for (const sx of seritX) ctx.fillRect(sx - seritW / 2, ust - kH + 4, seritW, kH - 2);
-        // Parlama
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        for (const sx of seritX) {
+            ctx.fillStyle = metal(ctx, G.susleme, ust - kH, ust);
+            ctx.fillRect(sx - seritW / 2, ust - kH + 3, seritW, kH);
+        }
+        // Kapaktaki amblem taşı (alev renginde parlıyor)
+        const ay = ust - kH * 0.5;
+        const ar = kH * 0.32;
+        ctx.save();
+        ctx.shadowColor = G.alev[1];
+        ctx.shadowBlur = 10 + 25 * parlama;
+        ctx.beginPath();
+        ctx.moveTo(0, ay - ar);
+        ctx.lineTo(ar * 0.8, ay);
+        ctx.lineTo(0, ay + ar);
+        ctx.lineTo(-ar * 0.8, ay);
+        ctx.closePath();
+        const tas = ctx.createLinearGradient(0, ay - ar, 0, ay + ar);
+        tas.addColorStop(0, G.alev[0]);
+        tas.addColorStop(1, G.alev[2]);
+        ctx.fillStyle = tas;
+        ctx.fill();
+        ctx.restore();
+        // Kapak parlaması
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.moveTo(-w / 2 + kH * 0.7, ust - kH + 6);
-        ctx.lineTo(w / 2 - kH * 0.7, ust - kH + 6);
+        ctx.moveTo(-w / 2 + kH * 0.8, ust - kH + 7);
+        ctx.lineTo(w / 2 - kH * 0.8, ust - kH + 7);
         ctx.stroke();
-        // Kapak aralığından sızan ışık: "açılmak üzere"
-        ctx.shadowColor = isikRengi;
-        ctx.shadowBlur = 28;
-        ctx.fillStyle = '#fff6d6';
-        ctx.fillRect(-w / 2 + 4, ust + 1, w - 8, 4);
-        ctx.shadowBlur = 0;
+
+        // Kapak aralığından sızan alev ışığı: "patlamak üzere"
+        if (parlama > 0) {
+            ctx.save();
+            ctx.globalAlpha = Math.min(1, 0.35 + parlama);
+            ctx.shadowColor = G.alev[1];
+            ctx.shadowBlur = 20 + 30 * parlama;
+            ctx.fillStyle = G.alev[0];
+            ctx.fillRect(-w / 2 + 4, ust - 1, w - 8, 3 + 4 * parlama);
+            ctx.shadowBlur = 0;
+            if (parlama > 0.4) {
+                ctx.globalCompositeOperation = 'lighter';
+                const isin = ctx.createLinearGradient(0, ust, 0, ust - boyut * 0.6 * parlama);
+                isin.addColorStop(0, G.alev[1] + 'aa');
+                isin.addColorStop(1, G.alev[1] + '00');
+                ctx.fillStyle = isin;
+                for (const ix of [-0.32, -0.1, 0.12, 0.34]) {
+                    ctx.beginPath();
+                    ctx.moveTo(w * ix - 6, ust);
+                    ctx.lineTo(w * ix + 6, ust);
+                    ctx.lineTo(w * ix * 1.4 + 14, ust - boyut * 0.6 * parlama);
+                    ctx.lineTo(w * ix * 1.4 - 14, ust - boyut * 0.6 * parlama);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+            ctx.restore();
+        }
     }
 
-    // Kilit
+    // --- Kilit ---
     const kilitW = w * 0.15;
     const kilitH = gH * 0.42;
     const kilitY = acik ? ust + 3 : ust - kilitH * 0.35;
     yuvarlakYol(ctx, -kilitW / 2, kilitY, kilitW, kilitH, 6);
-    ctx.fillStyle = altin;
+    ctx.fillStyle = metal(ctx, G.susleme, kilitY, kilitY + kilitH);
     ctx.fill();
     ctx.lineWidth = 2;
-    ctx.strokeStyle = '#a77800';
+    ctx.strokeStyle = renkTon(G.susleme, -0.5);
     ctx.stroke();
-    ctx.fillStyle = '#3a2a00';
+    ctx.fillStyle = '#1a1206';
     ctx.beginPath();
     ctx.arc(0, kilitY + kilitH * 0.42, kilitW * 0.14, 0, Math.PI * 2);
     ctx.fill();
@@ -544,16 +701,16 @@ function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: numb
 
 // Açık sandıktan yukarı yükselen ışık hüzmesi (kapağın arkasında kalır)
 function cizHuzme(ctx: CanvasRenderingContext2D, w: number, ust: number, renk: string) {
-    const huzmeBoyu = w * 1.6;
-    const huzme = ctx.createLinearGradient(0, ust, 0, ust - huzmeBoyu);
+    const boy = w * 1.6;
+    const huzme = ctx.createLinearGradient(0, ust, 0, ust - boy);
     huzme.addColorStop(0, renk + 'b0');
     huzme.addColorStop(1, renk + '00');
     ctx.fillStyle = huzme;
     ctx.beginPath();
     ctx.moveTo(-w * 0.42, ust);
     ctx.lineTo(w * 0.42, ust);
-    ctx.lineTo(w * 0.72, ust - huzmeBoyu);
-    ctx.lineTo(-w * 0.72, ust - huzmeBoyu);
+    ctx.lineTo(w * 0.72, ust - boy);
+    ctx.lineTo(-w * 0.72, ust - boy);
     ctx.closePath();
     ctx.fill();
 }
@@ -631,7 +788,7 @@ function cizBattleBasligi(ctx: CanvasRenderingContext2D, d: CizimDurumu) {
     const parcaW = (cubukW - (n - 1) * bosluk) / n;
     for (let k = 0; k < n; k++) {
         const px = GENISLIK / 2 - cubukW / 2 + k * (parcaW + bosluk);
-        const aktif = d.asama === 'battle' && k === d.aktifTur;
+        const aktif = k === d.aktifTur;
         const acildi = k < d.aktifTur;
         neonKutu(ctx, px, 50, parcaW, 10, 5, aktif ? '#ffffff' : (acildi ? '#6b6f7c' : '#22242c'), aktif ? '#ffffff' : null, 12);
     }
@@ -686,10 +843,15 @@ function cizBeklemePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 
     ctx.fillText(d.asama === 'lobi' ? 'Katılmak için ⚔️ Katıl butonuna bas' : 'Battle henüz açılmadı', cx, y + 312);
 }
 
-// Kutu açılma sahnesi (oyuncunun kendi alanı)
-function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, y: number, w: number, h: number, index: 0 | 1) {
+// Kutu açılma sahnesi (oyuncunun kendi alanı). Evreler:
+//   salla : sandık giderek şiddetlenen şekilde sağa sola sallanır, alevler büyür, kapaktan ışık sızar
+//   patla : beyaz parlama, kapak açılır, halka dalgası
+//   yuksel: item sandığın ağzından yükselir ve büyür
+//   son   : item yerinde, nadirlik etiketi görünür
+function cizSahne(ctx: CanvasRenderingContext2D, s: KutuSahnesi, x: number, y: number, w: number, h: number) {
     const cx = x + w / 2;
-    const oyuncuRengi = OYUNCU_RENKLERI[index];
+    const G = s.kasa.gorunum;
+    const item = s.item;
 
     ctx.save();
     yuvarlakYol(ctx, x, y, w, h, 18);
@@ -697,69 +859,99 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
     ctx.fill();
     ctx.clip();
 
-    if (sahne.durum === 'sallaniyor') {
-        const kutuY = y + h * 0.63;
-        const glow = ctx.createRadialGradient(cx, kutuY, 10, cx, kutuY, w * 0.5);
-        glow.addColorStop(0, oyuncuRengi + '55');
-        glow.addColorStop(1, oyuncuRengi + '00');
+    if (s.evre === 'salla') {
+        const t = s.t;
+        const boyut = 172;
+        const kutuY = y + h * 0.64;
+        const tabanY = kutuY + boyut * 0.24;
+
+        const glow = ctx.createRadialGradient(cx, kutuY, 10, cx, kutuY, w * 0.55);
+        glow.addColorStop(0, G.alev[1] + (t > 0.5 ? '66' : '33'));
+        glow.addColorStop(1, G.alev[1] + '00');
         ctx.fillStyle = glow;
         ctx.fillRect(x, y, w, h);
 
-        // Sallanma çizgileri
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-        ctx.lineWidth = 4;
-        ctx.lineCap = 'round';
-        for (const yon of [-1, 1]) {
-            for (let k = 0; k < 3; k++) {
-                const r = 128 + k * 20;
-                ctx.globalAlpha = 0.8 - k * 0.25;
-                ctx.beginPath();
-                ctx.arc(cx, kutuY, r, yon === -1 ? Math.PI - 0.35 : -0.35, yon === -1 ? Math.PI + 0.35 : 0.35);
-                ctx.stroke();
-            }
-        }
-        ctx.globalAlpha = 1;
-        ctx.lineCap = 'butt';
+        // Arkadaki büyük alev: kapağın üstünü aşıp sahnenin üstüne kadar yükselir
+        cizAlevler(ctx, cx, tabanY, boyut * 1.5, Math.min(tabanY - y - 8, boyut * (1.15 + 0.6 * t)), G.alev, s.kare, s.faz, 0.45 + 0.55 * t);
 
-        cizKutu(ctx, sahne.kasa, cx, kutuY, 205, index === 0 ? -0.11 : 0.11, false, '#ffffff');
-        cizParilti(ctx, cx - 115, kutuY - 100, 12, '#ffffff');
-        cizParilti(ctx, cx + 120, kutuY - 70, 9, '#ffffff');
-        cizParilti(ctx, cx + 85, kutuY - 125, 6, '#ffffff');
+        // Sallanma: genlik giderek artıyor, araya küçük zıplamalar
+        const genlik = 0.05 + 0.16 * t;
+        const aci = Math.sin(s.kare * 1.9 + s.faz) * genlik;
+        const kayma = Math.sin(s.kare * 2.7 + s.faz) * 5 * t;
+        const zipla = -Math.abs(Math.sin(s.kare * 1.4 + s.faz)) * 9 * t;
+        cizKutu(ctx, s.kasa, cx + kayma, kutuY + zipla, boyut, aci, false, G.alev[1], 0.15 + 0.85 * t);
+        // Öndeki küçük alevler sandığın alt köşelerini sarıyor
+        for (const yon of [-1, 1]) {
+            cizAlevler(ctx, cx + kayma + yon * boyut * 0.47, tabanY + 4, boyut * 0.32, boyut * (0.35 + 0.3 * t), G.alev, s.kare + yon * 2, s.faz + yon, 0.6 + 0.4 * t);
+        }
 
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = 'bold 24px Arial';
-        ctx.fillStyle = '#c9cbd6';
-        ctx.fillText('KASA AÇILIYOR...', cx, y + 30);
+        ctx.font = 'bold 22px Arial';
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.strokeText('KASA AÇILIYOR' + '.'.repeat(1 + (s.kare % 3)), cx, y + 24);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('KASA AÇILIYOR' + '.'.repeat(1 + (s.kare % 3)), cx, y + 24);
     } else {
-        const item = sahne.item;
-        const itemY = y + h * 0.36;
+        const patlama = s.evre === 'patla';
+        const t = s.evre === 'son' ? 1 : s.t;
+        const kutuY = y + h - 50;
+        const boyut = 150;
+        // Patlama anında kapak henüz açılmadı (ilk kare), sonra açık
+        const acik = !patlama || t > 0.3;
+
         // Nadirlik yükseldikçe efekt büyüyor: Sıradan sade, Efsanevi tam ışık şöleni
-        const guc = [0, 0.3, 0.45, 0.7, 1][item.seviye];
-        const glow = ctx.createRadialGradient(cx, itemY, 10, cx, itemY, w * 0.55);
+        const guc = [0.15, 0.3, 0.45, 0.7, 1][item.seviye] * (patlama ? t : 1);
+        const itemSonY = y + h * 0.34;
+        const glow = ctx.createRadialGradient(cx, itemSonY, 10, cx, itemSonY, w * 0.6);
         glow.addColorStop(0, item.renk + (item.seviye >= 3 ? '88' : '44'));
         glow.addColorStop(1, item.renk + '00');
+        ctx.globalAlpha = patlama ? t : 1;
         ctx.fillStyle = glow;
         ctx.fillRect(x, y, w, h);
-        if (guc > 0) cizIsinlar(ctx, cx, itemY, w * 0.62, item.renk, guc);
+        ctx.globalAlpha = 1;
+        cizIsinlar(ctx, cx, itemSonY, w * 0.65, item.renk, guc, s.kare * 0.05);
 
-        cizKutu(ctx, sahne.kasa, cx, y + h - 48, 170, 0, true, item.renk);
-        cizItemGorseli(ctx, item, cx, itemY, 132, true);
+        cizAlevler(ctx, cx, kutuY + boyut * 0.24, boyut * 1.35, boyut * (patlama ? 1.4 : 0.75), G.alev, s.kare, s.faz, patlama ? 1 : 0.4);
+        cizKutu(ctx, s.kasa, cx, kutuY, boyut, 0, acik, item.renk, 1);
 
-        if (item.seviye >= 3) {
-            cizParilti(ctx, cx - 125, itemY - 55, 13, item.renk);
-            cizParilti(ctx, cx + 130, itemY - 25, 10, '#ffffff');
-            cizParilti(ctx, cx + 100, itemY + 70, 7, item.renk);
-            cizParilti(ctx, cx - 105, itemY + 65, 8, '#ffffff');
+        // Item: ağızdan çıkıp yerine yükseliyor, hafif büyüyüp oturuyor
+        if (!patlama || t >= 1) {
+            const yt = s.evre === 'yuksel' ? s.t : (patlama ? 0 : 1);
+            const agizY = kutuY - boyut * 0.24;
+            const itemY = agizY + (itemSonY - agizY) * yumusakCikis(yt);
+            const boyutItem = 128 * (0.3 + 0.7 * geriSekme(yt));
+            cizItemGorseli(ctx, item, cx, itemY, boyutItem, true);
         }
-        const nadirlik = NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR');
-        ctx.font = 'bold 20px Arial';
-        cizEtiket(ctx, nadirlik, x + 16 + (ctx.measureText(nadirlik).width + 44) / 2, y + 30, item.renk, 20);
+
+        if (patlama) {
+            // Beyaz parlama + genişleyen halka
+            ctx.fillStyle = `rgba(255, 255, 255, ${(1 - t) * 0.85})`;
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = G.alev[0];
+            ctx.globalAlpha = 1 - t * 0.8;
+            ctx.lineWidth = 10 * (1 - t) + 2;
+            ctx.beginPath();
+            ctx.arc(cx, kutuY - boyut * 0.24, 30 + t * w * 0.5, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        } else if (s.evre === 'son' || s.t > 0.5) {
+            if (item.seviye >= 3) {
+                cizParilti(ctx, cx - 120, itemSonY - 45, 13, item.renk);
+                cizParilti(ctx, cx + 125, itemSonY - 15, 10, '#ffffff');
+                cizParilti(ctx, cx + 95, itemSonY + 60, 7, item.renk);
+                cizParilti(ctx, cx - 100, itemSonY + 55, 8, '#ffffff');
+            }
+            const nadirlik = NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR');
+            ctx.font = 'bold 20px Arial';
+            cizEtiket(ctx, nadirlik, x + 16 + (ctx.measureText(nadirlik).width + 44) / 2, y + 30, item.renk, 20);
+        }
     }
     ctx.restore();
 }
 
-// Kare kart: PNG + değer (+ yeterince büyükse isim)
+// Item kartı: kare (PNG üstte, değer altta) ya da yatay (PNG solda, değer sağda)
 function cizItemKarti(ctx: CanvasRenderingContext2D, item: KasaItemi, x: number, y: number, w: number, h: number) {
     neonKutu(ctx, x, y, w, h, 10, '#16171d', null);
     const g = ctx.createLinearGradient(0, y, 0, y + h);
@@ -771,23 +963,44 @@ function cizItemKarti(ctx: CanvasRenderingContext2D, item: KasaItemi, x: number,
     ctx.fillStyle = item.renk;
     ctx.fillRect(x + 8, y + h - 4, w - 16, 3);
 
-    const isimli = h >= 120;
-    const yaziVar = h >= 60;
-    const ikon = yaziVar ? Math.min(w * 0.72, h * (isimli ? 0.5 : 0.55)) : Math.min(w, h) * 0.78;
-    cizItemGorseli(ctx, item, x + w / 2, y + (yaziVar ? h * 0.38 : h / 2), ikon, false);
-    if (!yaziVar) return;
-
-    ctx.textAlign = 'center';
+    const metin = `${sayi(item.deger)} DL`;
     ctx.textBaseline = 'middle';
+    if (w > h * 1.6) {
+        const ikon = h * 0.8;
+        cizItemGorseli(ctx, item, x + 4 + ikon / 2, y + h / 2 - 1, ikon, false);
+        ctx.textAlign = 'center';
+        sigdirFont(ctx, metin, w - ikon - 10, 15, 9);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(metin, x + ikon + 4 + (w - ikon - 4) / 2, y + h / 2);
+        return;
+    }
+
+    const isimli = h >= 120;
+    const ikon = Math.min(w * 0.72, h * (isimli ? 0.5 : 0.55));
+    cizItemGorseli(ctx, item, x + w / 2, y + h * 0.38, ikon, false);
+    ctx.textAlign = 'center';
     if (isimli) {
         ctx.font = 'bold 15px Arial';
         ctx.fillStyle = '#c9cbd6';
         ctx.fillText(kisalt(ctx, item.ad, w - 8), x + w / 2, y + h * 0.7);
     }
-    const metin = `${sayi(item.deger)} DL`;
     sigdirFont(ctx, metin, w - 8, isimli ? 19 : 17, 10);
     ctx.fillStyle = '#ffffff';
     ctx.fillText(metin, x + w / 2, y + h * (isimli ? 0.86 : 0.82));
+}
+
+function cizBosYuva(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+    yuvarlakYol(ctx, x, y, w, h, 10);
+    ctx.setLineDash([6, 6]);
+    ctx.strokeStyle = '#2a2c36';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = `bold ${Math.floor(Math.min(w, h) * 0.45)}px Arial`;
+    ctx.fillStyle = '#2a2c36';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('?', x + w / 2, y + h / 2 + 1);
 }
 
 function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0 | 1) {
@@ -801,7 +1014,8 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
     const kazandi = bitti && d.kazanan === index;
     const kaybetti = bitti && d.kazanan !== -1 && d.kazanan !== index;
     const sahne = d.sahneler?.[index];
-    const nadirAcilis = !bitti && sahne?.durum === 'acildi' && sahne.item.seviye >= 3;
+    const itemGorundu = !!sahne && (sahne.evre === 'son' || (sahne.evre === 'yuksel' && sahne.t > 0.5));
+    const nadirAcilis = !bitti && itemGorundu && sahne!.item.seviye >= 3;
 
     const neon = kazandi ? '#ffd700' : (nadirAcilis ? sahne!.item.renk : renk);
     neonKutu(ctx, x, y, w, h, 22, '#111218', neon, kazandi || nadirAcilis ? 45 : 18);
@@ -813,49 +1027,80 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
     }
 
     // Başlık: avatar + isim + toplam değer
-    cizAvatar(ctx, oyuncu, x + 52, y + 52, 34, renk);
+    cizAvatar(ctx, oyuncu, x + 52, y + 50, 34, renk);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.font = 'bold 30px Arial';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(kisalt(ctx, oyuncu.isim, 160), x + 98, y + 52);
+    ctx.fillText(kisalt(ctx, oyuncu.isim, 160), x + 98, y + 50);
     ctx.textAlign = 'right';
     sigdirFont(ctx, `${sayi(oyuncu.toplam)} DL`, 175, 40, 24);
     ctx.fillStyle = '#ffd700';
     ctx.shadowColor = '#ffd700';
     ctx.shadowBlur = 12;
-    ctx.fillText(`${sayi(oyuncu.toplam)} DL`, x + w - 22, y + 52);
+    ctx.fillText(`${sayi(oyuncu.toplam)} DL`, x + w - 22, y + 50);
     ctx.shadowBlur = 0;
 
     const sx = x + 15;
     const sw = w - 30;
 
     if (!bitti && sahne) {
-        // Kutu sahnesi + altında çıkan item bilgisi
-        cizSahne(ctx, sahne, sx, y + 102, sw, 282, index);
-        ctx.textAlign = 'center';
+        // Kutu sahnesi
+        cizSahne(ctx, sahne, sx, y + 94, sw, 252);
+
+        // Çıkan item: "Ad  +Değer DL" tek satır
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        if (sahne.durum === 'acildi') {
-            sigdirFont(ctx, sahne.item.ad, sw - 20, 34, 18);
+        const satirY = y + 370;
+        if (itemGorundu) {
+            const ad = sahne.item.ad;
+            const deger = `+${sayi(sahne.item.deger)} DL`;
+            let boyut = 28;
+            const olc = () => {
+                ctx.font = `bold ${boyut}px Arial`;
+                const a = ctx.measureText(ad + '  ').width;
+                ctx.font = `bold ${boyut + 2}px Arial`;
+                return a + ctx.measureText(deger).width;
+            };
+            while (boyut > 16 && olc() > sw - 20) boyut--;
+            const toplamW = olc();
+            ctx.font = `bold ${boyut}px Arial`;
+            const adW = ctx.measureText(ad + '  ').width;
+            const basX = x + w / 2 - toplamW / 2;
             ctx.fillStyle = '#ffffff';
-            ctx.fillText(sahne.item.ad, x + w / 2, y + 410);
-            ctx.font = 'bold 38px Arial';
+            ctx.fillText(ad, basX, satirY);
+            ctx.font = `bold ${boyut + 2}px Arial`;
             ctx.fillStyle = sahne.item.renk;
             ctx.shadowColor = sahne.item.renk;
-            ctx.shadowBlur = 14;
-            ctx.fillText(`+${sayi(sahne.item.deger)} DL`, x + w / 2, y + 448);
+            ctx.shadowBlur = 12;
+            ctx.fillText(deger, basX + adW, satirY);
             ctx.shadowBlur = 0;
         } else {
-            ctx.font = 'bold 34px Arial';
+            ctx.textAlign = 'center';
+            ctx.font = 'bold 28px Arial';
             ctx.fillStyle = '#3a3d4a';
-            ctx.fillText('? ? ?', x + w / 2, y + 410);
-            ctx.font = 'bold 38px Arial';
-            ctx.fillText('? DL', x + w / 2, y + 448);
+            ctx.fillText('? ? ?', x + w / 2, satirY);
+        }
+
+        // Şu ana kadar açılanlar: 5'e kadar büyük kare kartlar, fazlası iki sıra yatay kart
+        const n = d.kasalar.length;
+        const alanY = y + 392;
+        const alanH = 70;
+        const tekSira = n <= 5;
+        const kartW = tekSira ? Math.min(82, (sw - (n - 1) * 8) / n) : (sw - 4 * 8) / 5;
+        const kartH = tekSira ? alanH : (alanH - 6) / 2;
+        const basX = x + w / 2 - (Math.min(n, 5) * kartW + (Math.min(n, 5) - 1) * 8) / 2;
+        for (let k = 0; k < n; k++) {
+            const kx = basX + (k % 5) * (kartW + 8);
+            const ky = alanY + Math.floor(k / 5) * (kartH + 6);
+            const item = oyuncu.acilanlar[k];
+            if (item) cizItemKarti(ctx, item, kx, ky, kartW, kartH);
+            else cizBosYuva(ctx, kx, ky, kartW, kartH);
         }
     } else {
         // Sonuç: büyük toplam + açılan tüm itemler
         const rx = sx;
-        const ry = y + 102;
+        const ry = y + 100;
         const rw = sw;
         const rh = 180;
         ctx.save();
@@ -935,13 +1180,10 @@ function cizAltYazi(ctx: CanvasRenderingContext2D, metin: string, renk: string) 
     ctx.fillText(kisalt(ctx, metin, 720), GENISLIK / 2, 585);
 }
 
-function battleCiz(d: CizimDurumu): AttachmentBuilder {
-    const canvas = createCanvas(GENISLIK, YUKSEKLIK);
-    const ctx = canvas.getContext('2d');
-    const battleEkrani = d.asama === 'battle' || d.asama === 'bitti';
-
+// Tüm ekranı verilen bağlama çizer (1000x620 mantıksal koordinat)
+function ekraniCiz(ctx: CanvasRenderingContext2D, d: CizimDurumu) {
     cizArkaPlan(ctx);
-    if (battleEkrani) {
+    if (d.asama === 'battle' || d.asama === 'bitti') {
         cizBattleBasligi(ctx, d);
         cizBattlePaneli(ctx, d, 0);
         cizBattlePaneli(ctx, d, 1);
@@ -953,10 +1195,84 @@ function battleCiz(d: CizimDurumu): AttachmentBuilder {
         cizVs(ctx, PANEL_Y + PANEL_H / 2);
     }
     cizAltYazi(ctx, d.altYazi, d.asama === 'bitti' ? '#ffd700' : '#c9cbd6');
+}
 
-    // PNG yerine JPEG: dosya ~4 kat küçük, Discord'da kare yüklenmeden bir sonrakine geçilmiyor.
-    // Limbo'daki gibi her karede farklı isim: Discord eski resmi önbellekten göstermesin.
+// Sabit ekran (kurulum, lobi, sonuç) -> JPEG
+function resimOlustur(d: CizimDurumu): AttachmentBuilder {
+    const canvas = createCanvas(GENISLIK, YUKSEKLIK);
+    ekraniCiz(canvas.getContext('2d'), d);
+    // Her karede farklı isim: Discord eski resmi önbellekten göstermesin
     return new AttachmentBuilder(canvas.toBuffer('image/jpeg', { quality: 0.9 }), { name: `vs_${Date.now()}.jpg` });
+}
+
+// Animasyonlu tur -> tek seferlik oynayan GIF (döngü yok, son karede durur)
+function gifOlustur(kareler: { d: CizimDurumu; gecikme: number }[]): AttachmentBuilder {
+    const W = Math.round(GENISLIK * GIF_OLCEK);
+    const H = Math.round(YUKSEKLIK * GIF_OLCEK);
+    const canvas = createCanvas(W, H);
+    const ctx = canvas.getContext('2d');
+    const goruntuler = kareler.map(k => {
+        ctx.save();
+        ctx.scale(GIF_OLCEK, GIF_OLCEK);
+        ekraniCiz(ctx, k.d);
+        ctx.restore();
+        return ctx.getImageData(0, 0, W, H).data;
+    });
+
+    // Tek ortak palet: sallanma sonu, patlama ve son kareden örnek alınarak çıkarılıyor
+    const ornekKareler = [goruntuler[Math.floor(ZAMANLAMA.sallanmaKaresi * 0.8)], goruntuler[ZAMANLAMA.sallanmaKaresi + 1], goruntuler[goruntuler.length - 1]];
+    const adim = 3;
+    const ornek = new Uint8ClampedArray(ornekKareler.length * Math.ceil(W * H / adim) * 4);
+    let o = 0;
+    for (const g of ornekKareler) {
+        for (let p = 0; p < W * H; p += adim) {
+            ornek[o++] = g[p * 4]; ornek[o++] = g[p * 4 + 1]; ornek[o++] = g[p * 4 + 2]; ornek[o++] = 255;
+        }
+    }
+    const palet = gifenc.quantize(ornek.subarray(0, o), 256);
+
+    const gif = gifenc.GIFEncoder();
+    goruntuler.forEach((g, i) => {
+        gif.writeFrame(gifenc.applyPalette(g, palet), W, H, i === 0
+            ? { palette: palet, delay: kareler[i].gecikme, repeat: -1 }
+            : { delay: kareler[i].gecikme });
+    });
+    gif.finish();
+    return new AttachmentBuilder(Buffer.from(gif.bytes()), { name: `vs_${Date.now()}.gif` });
+}
+
+// Bir turun animasyon kareleri: salla -> patla -> yüksel -> son
+function turKareleri(
+    temel: Pick<CizimDurumu, 'asama' | 'kasalar' | 'aktifTur'>,
+    once: [OyuncuGorunumu, OyuncuGorunumu],
+    sonra: [OyuncuGorunumu, OyuncuGorunumu],
+    kasa: Kasa,
+    itemler: [KasaItemi, KasaItemi],
+    fazlar: [number, number]
+): { d: CizimDurumu; gecikme: number }[] {
+    const kareler: { d: CizimDurumu; gecikme: number }[] = [];
+    let kare = 0;
+    const ekle = (evre: KutuSahnesi['evre'], t: number, gecikme: number) => {
+        const oyuncular = evre === 'son' ? sonra : once;
+        kareler.push({
+            gecikme,
+            d: {
+                ...temel,
+                oyuncular,
+                sahneler: [
+                    { kasa, item: itemler[0], evre, t, kare, faz: fazlar[0] },
+                    { kasa, item: itemler[1], evre, t, kare, faz: fazlar[1] }
+                ],
+                altYazi: `Havuz: ${sayi(oyuncular[0].toplam + oyuncular[1].toplam)} DL`
+            }
+        });
+        kare++;
+    };
+    for (let i = 0; i < ZAMANLAMA.sallanmaKaresi; i++) ekle('salla', i / (ZAMANLAMA.sallanmaKaresi - 1), ZAMANLAMA.sallanmaGecikme);
+    [0, 0.5, 1].forEach(t => ekle('patla', t, 70));
+    for (let i = 1; i <= ZAMANLAMA.yukselmeKaresi; i++) ekle('yuksel', i / ZAMANLAMA.yukselmeKaresi, ZAMANLAMA.yukselmeGecikme);
+    ekle('son', 1, 200);
+    return kareler;
 }
 
 async function avatarYukle(user: User): Promise<Image | null> {
@@ -979,8 +1295,9 @@ async function avatarYukle(user: User): Promise<Image | null> {
 // küçültüyor, düz ekte aynı görsel belirgin şekilde daha büyük görünüyor.
 type Bilesenler = ActionRowBuilder<MessageActionRowComponentBuilder>[];
 
-function mesajHazirla(d: CizimDurumu, metin: string, components: Bilesenler) {
-    return { content: metin, embeds: [], files: [battleCiz(d)], components, allowedMentions: { parse: [] } };
+function mesajHazirla(gorsel: CizimDurumu | AttachmentBuilder, metin: string, components: Bilesenler) {
+    const dosya = gorsel instanceof AttachmentBuilder ? gorsel : resimOlustur(gorsel);
+    return { content: metin, embeds: [], files: [dosya], components, allowedMentions: { parse: [] } };
 }
 
 function iptalMesaji(metin: string) {
@@ -1000,7 +1317,7 @@ function kasaOzeti(kasalar: Kasa[]): string {
 }
 
 // "%0.1" gibi: gereksiz sıfırlar olmadan
-const yuzde = (kasa: Kasa, seviye: number) => `%${parseFloat((kasa.sanslar[seviye] / kasa.toplamSans * 100).toFixed(2))}`;
+const yuzde = (kasa: Kasa, seviye: number) => `%${parseFloat(kasa.nadirlikSansi[seviye].toFixed(2))}`;
 
 function kurulumBilesenleri(kasaSayisi: number): Bilesenler {
     const dolu = kasaSayisi >= MAX_KASA;
@@ -1118,7 +1435,11 @@ export class VsCommand implements Command {
         let odemeYapildi = false;
 
         try {
-            const ilkKasa = KASA_MAP.get(interaction.options.getString('kasa', true))!;
+            const ilkKasa = KASA_MAP.get(interaction.options.getString('kasa', true));
+            if (!ilkKasa) {
+                await interaction.editReply({ content: '❌ Bu kasa artık yok, komutu tekrar seç.' });
+                return;
+            }
             const adet = interaction.options.getInteger('adet', true);
             let kasalar: Kasa[] = Array.from({ length: Math.min(adet, MAX_KASA) }, () => ilkKasa);
 
@@ -1233,7 +1554,8 @@ export class VsCommand implements Command {
                 rakip = i.user;
                 rakipUcreti = ucret;
                 aktifOynayanlar.add(rakip.id);
-                await i.update({ components: [] }); // butonları hemen kaldır
+                // Butonları hemen kaldır; ilk turun animasyonu hazırlanırken lobi resmi ekranda kalır
+                await i.update({ content: `## ⚔️ <@${userId}> vs <@${rakip.id}>\nRakip bulundu, kasalar hazırlanıyor...`, components: [], allowedMentions: { parse: [] } });
             }
 
             // ==================================================
@@ -1256,23 +1578,22 @@ export class VsCommand implements Command {
             odemeYapildi = true;
 
             // ==================================================
-            // 4) ANİMASYON: her turda iki kare (kasa sallanıyor -> item çıktı)
+            // 4) ANİMASYON: her tur tek bir GIF (salla -> patla -> item yükselir)
             // ==================================================
             const [rakipAvatar] = await Promise.all([
                 avatarYukle(rakip),
                 gorselleriHazirla(sonuclar.flat(), kasalar)
             ]);
             const rakipGorunumu: OyuncuGorunumu = { isim: rakip.displayName, avatar: rakipAvatar, acilanlar: [], toplam: 0 };
-            const oyuncular: [OyuncuGorunumu, OyuncuGorunumu] = [kurucu, rakipGorunumu];
             const rakipId = rakip.id;
-            const sure = kareSureleri(kasalar.length);
+            const sonucuGoster = kasalar.length > 5 ? ZAMANLAMA.sonucuGosterKalabalik : ZAMANLAMA.sonucuGoster;
 
-            // Her kare, mesaj düzenlemesi Discord'a ulaştıktan SONRA en az `ekrandaKal` ms görünür kalır.
-            // Bir sonraki kare bu bekleme sırasında çiziliyor, böylece çizim süresi araya eklenmiyor.
+            // Her tur, mesaj düzenlemesi Discord'a ulaştıktan SONRA en az `ekrandaKal` ms görünür kalır.
+            // Bir sonraki turun GIF'i bu bekleme sırasında hazırlanıyor, böylece çizim süresi araya eklenmiyor.
             let oncekiKareZamani = 0;
             let oncekiKareSuresi = 0;
-            const goster = async (d: CizimDurumu, metin: string, ekrandaKal: number): Promise<boolean> => {
-                const icerik = mesajHazirla(d, metin, []);
+            const goster = async (gorsel: CizimDurumu | AttachmentBuilder, metin: string, ekrandaKal: number): Promise<boolean> => {
+                const icerik = mesajHazirla(gorsel, metin, []);
                 await bekle(Math.max(0, oncekiKareSuresi - (Date.now() - oncekiKareZamani)));
                 try {
                     await gameMessage.edit(icerik);
@@ -1284,39 +1605,33 @@ export class VsCommand implements Command {
                 return true;
             };
 
-            animasyon:
+            let durum: [OyuncuGorunumu, OyuncuGorunumu] = [kurucu, rakipGorunumu];
             for (let tur = 0; tur < kasalar.length; tur++) {
                 const kasa = kasalar[tur];
+                const sonraki = [0, 1].map(o => ({
+                    ...durum[o],
+                    acilanlar: [...durum[o].acilanlar, sonuclar[tur][o]],
+                    toplam: durum[o].toplam + sonuclar[tur][o].deger
+                })) as [OyuncuGorunumu, OyuncuGorunumu];
+                const kareler = turKareleri(
+                    { asama: 'battle', kasalar, aktifTur: tur },
+                    durum, sonraki, kasa, sonuclar[tur], [Math.random() * 6, Math.random() * 6]
+                );
+                const animasyonSuresi = kareler.reduce((t, k) => t + k.gecikme, 0);
                 const metin = `### ⚔️ Tur ${tur + 1}/${kasalar.length} — ${kasa.emoji} ${kasa.ad}\n<@${userId}> **vs** <@${rakipId}>`;
-                const ekran = (durum: KutuSahnesi['durum']): CizimDurumu => ({
-                    asama: 'battle',
-                    kasalar,
-                    aktifTur: tur,
-                    oyuncular,
-                    sahneler: [
-                        { durum, kasa, item: sonuclar[tur][0] },
-                        { durum, kasa, item: sonuclar[tur][1] }
-                    ],
-                    altYazi: `Havuz: ${sayi(oyuncular[0].toplam + oyuncular[1].toplam)} DL`
-                });
-
-                if (!await goster(ekran('sallaniyor'), metin, sure.sallanma)) break animasyon;
-
-                for (const o of [0, 1] as const) {
-                    oyuncular[o].acilanlar.push(sonuclar[tur][o]);
-                    oyuncular[o].toplam += sonuclar[tur][o].deger;
-                }
-                if (!await goster(ekran('acildi'), metin, sure.acilis)) break animasyon;
+                if (!await goster(gifOlustur(kareler), metin, animasyonSuresi + sonucuGoster)) break;
+                durum = sonraki;
             }
 
             // ==================================================
             // 5) SONUÇ EKRANI
             // ==================================================
             // Animasyon yarıda kesildiyse bile son ekran eksiksiz olsun
-            for (const o of [0, 1] as const) {
-                oyuncular[o].acilanlar = sonuclar.map(s => s[o]);
-                oyuncular[o].toplam = toplamlar[o];
-            }
+            const oyuncular = [0, 1].map(o => ({
+                ...durum[o],
+                acilanlar: sonuclar.map(s => s[o]),
+                toplam: toplamlar[o]
+            })) as [OyuncuGorunumu, OyuncuGorunumu];
 
             const kazananIsim = kazanan === -1 ? '' : oyuncular[kazanan].isim;
             const kazananId = kazanan === 0 ? userId : rakipId;
