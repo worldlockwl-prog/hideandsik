@@ -14,7 +14,7 @@ import {
 } from 'discord.js';
 import { createCanvas, loadImage, Image, CanvasRenderingContext2D } from 'canvas';
 import { randomInt } from 'crypto';
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import { Command, CommandDeferType } from '../structers/command';
 import { dbManager } from '../db/db';
@@ -44,6 +44,8 @@ const VS_KLASORU = path.join(process.cwd(), 'assets', 'vs');
 
 // Animasyon zamanlaması. Hızlandırmak/yavaşlatmak için sadece bu sayıları değiştir.
 const ZAMANLAMA = {
+    gecisKaresi: 8,          // tur başı geçişi: önceki item envantere uçar, yeni sandık düşer
+    gecisGecikme: 70,
     sallanmaKaresi: 14,      // sandığın sallandığı kare sayısı
     sallanmaGecikme: 85,     // her sallanma karesinin süresi (ms) -> 14 x 85 ≈ 1.2 sn
     yukselmeKaresi: 6,       // item'in sandıktan yükseldiği kare sayısı
@@ -123,7 +125,7 @@ function ayarlariYukle(): Kasa[] {
     const kasalar = readdirSync(kasaKlasoru).filter(f => f.endsWith('.json')).map((dosya): Kasa => {
         const k = jsonOku<{ id: string; ad: string; emoji: string; fiyat: number; gorunum: KasaGorunumu; icerik: { item: string; sans: number }[] }>(path.join(kasaKlasoru, dosya));
         const hata = (m: string) => new Error(`[vs] kasalar/${dosya}: ${m}`);
-        if (!k.id || !k.ad || !(k.fiyat > 0)) throw hata('id, ad ve fiyat zorunlu');
+        if (!k.id || !k.ad || !Number.isInteger(k.fiyat) || k.fiyat <= 0) throw hata('id, ad ve fiyat (pozitif tam sayı) zorunlu');
         const renkler = [k.gorunum?.renk, k.gorunum?.susleme, ...(k.gorunum?.alev ?? [])];
         if (renkler.length !== 5 || !renkler.every(r => HEX_RENK.test(r ?? ''))) {
             throw hata('gorunum.renk, gorunum.susleme ve 3 renkli gorunum.alev "#rrggbb" biçiminde olmalı');
@@ -172,6 +174,61 @@ const LOBI_SURESI = 120_000;     // bu sürede rakip katılmazsa battle iptal + 
 
 // --- ZIRH 1: AYNI ANDA TEK BATTLE (hem kurucu hem rakip için) ---
 const aktifOynayanlar = new Set<string>();
+
+// --- ZIRH 2: AYNI ANDA OYNANAN BATTLE SINIRI ---
+// GIF üretimi işlemciyi yoruyor; çok sayıda battle aynı anda animasyona girerse bot yavaşlar.
+// Sınır doluysa lobiler açık kalır, sadece "Katıl" o an reddedilir.
+const MAX_ESZAMANLI_BATTLE = 3;
+let oynananBattleSayisi = 0;
+
+// --- ZIRH 3: EMANET (bot çökse/yeniden başlasa bile para kaybolmasın) ---
+// Oyuncudan düşülen ama henüz ödemesi/iadesi yapılmamış her tutar bu dosyada tutulur.
+// Bot açılınca dosyada kalan kayıtlar (yarım kalmış battle'lar) sahiplerine iade edilir.
+interface Emanet { battle: string; kullanici: string; miktar: number; zaman: number }
+const EMANET_DOSYASI = path.join(VS_KLASORU, 'emanet.json');
+
+function emanetleriOku(): Emanet[] {
+    try {
+        return JSON.parse(readFileSync(EMANET_DOSYASI, 'utf-8')) as Emanet[];
+    } catch {
+        return [];
+    }
+}
+
+function emanetleriYaz(liste: Emanet[]) {
+    // Önce geçici dosyaya yazıp sonra adını değiştiriyoruz: yazarken çökse bile dosya bozulmaz
+    const gecici = EMANET_DOSYASI + '.tmp';
+    writeFileSync(gecici, JSON.stringify(liste, null, 2));
+    renameSync(gecici, EMANET_DOSYASI);
+}
+
+function emanetEkle(battle: string, kullanici: string, miktar: number) {
+    emanetleriYaz([...emanetleriOku(), { battle, kullanici, miktar, zaman: Date.now() }]);
+}
+
+// Ödeme/iade yapılmadan HEMEN ÖNCE çağrılır: kayıt silinip sonra para verilir,
+// böylece hiçbir senaryoda aynı tutar iki kere ödenmez.
+function emanetKapat(battle: string, kullanici?: string) {
+    emanetleriYaz(emanetleriOku().filter(e => !(e.battle === battle && (!kullanici || e.kullanici === kullanici))));
+}
+
+// Sadece süreç başına bir kere çalışır: o an dosyada olan her kayıt önceki çalışmadan kalmadır.
+let yarimKalanlarIadeEdildi = false;
+function yarimKalanlariIadeEt() {
+    if (yarimKalanlarIadeEdildi) return;
+    for (const e of emanetleriOku()) {
+        emanetKapat(e.battle, e.kullanici);
+        dbManager.addDL(e.kullanici, e.miktar);
+        console.log(`[vs] Yarım kalan battle iadesi: ${e.kullanici} +${e.miktar} DL (battle ${e.battle})`);
+    }
+    yarimKalanlarIadeEdildi = true;
+}
+try {
+    yarimKalanlariIadeEt();
+} catch (err) {
+    // Veritabanı henüz hazır değilse ilk /vs komutunda tekrar denenecek
+    console.warn('[vs] Yarım kalan battle iadeleri şimdi yapılamadı, ilk /vs komutunda denenecek:', (err as Error).message);
+}
 
 function itemCek(kasa: Kasa): KasaItemi {
     // Tower'daki gibi kriptografik üreteç: sonuç V8'in PRNG'sinden tahmin edilemez.
@@ -246,10 +303,11 @@ interface OyuncuGorunumu {
 interface KutuSahnesi {
     kasa: Kasa;
     item: KasaItemi;
-    evre: 'salla' | 'patla' | 'yuksel' | 'son';
+    evre: 'gecis' | 'salla' | 'patla' | 'yuksel' | 'son';
     t: number;    // evre içindeki ilerleme 0..1
     kare: number; // genel kare sayacı (alev titremesi, kıvılcımlar)
     faz: number;  // iki oyuncunun sandığı aynı anda aynı yöne sallanmasın
+    onceki: KasaItemi | null; // geçişte envantere uçan bir önceki turun itemi
 }
 
 interface CizimDurumu {
@@ -266,6 +324,13 @@ interface CizimDurumu {
 const sayi = (n: number) => n.toLocaleString('tr-TR');
 const yumusakCikis = (t: number) => 1 - Math.pow(1 - t, 3);
 const geriSekme = (t: number) => 1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2);
+// Yere düşüp iki kere hafifçe seken hareket (0..1): ivmeli düşüş, %10 ve %3'lük sekmeler
+const zipla = (t: number) => {
+    if (t < 0.55) return Math.pow(t / 0.55, 2);
+    if (t < 0.82) return 1 - 0.1 * Math.sin((t - 0.55) / 0.27 * Math.PI);
+    return 1 - 0.03 * Math.sin((t - 0.82) / 0.18 * Math.PI);
+};
+const sinirla = (t: number) => Math.max(0, Math.min(1, t));
 // Kareden kareye aynı kalan "rastgele" sayı (kıvılcım konumları için)
 const sabitRastgele = (n: number) => {
     const x = Math.sin(n * 127.1) * 43758.5453;
@@ -859,7 +924,48 @@ function cizSahne(ctx: CanvasRenderingContext2D, s: KutuSahnesi, x: number, y: n
     ctx.fill();
     ctx.clip();
 
-    if (s.evre === 'salla') {
+    if (s.evre === 'gecis') {
+        // Yeni sandık yukarıdan düşüp yere sekerek oturuyor, inişte toz halkası
+        const boyut = 172;
+        const kutuY = y + h * 0.64;
+        const tabanY = kutuY + boyut * 0.24;
+        const dt = sinirla((s.t - 0.2) / 0.8);
+        if (dt > 0) {
+            const baslaY = y - boyut * 0.7;
+            const kY = baslaY + (kutuY - baslaY) * zipla(dt);
+            if (dt > 0.6) cizAlevler(ctx, cx, tabanY, boyut * 1.5, boyut * 0.9, G.alev, s.kare, s.faz, (dt - 0.6) / 0.4 * 0.45);
+            cizKutu(ctx, s.kasa, cx, kY, boyut, 0, false, G.alev[1], 0);
+            if (dt > 0.55) {
+                const r = sinirla((dt - 0.55) / 0.45);
+                ctx.save();
+                ctx.globalAlpha = 1 - r;
+                ctx.strokeStyle = G.alev[0];
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.ellipse(cx, tabanY + 4, boyut * (0.55 + 0.6 * r), 8 + 14 * r, 0, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(200, 200, 210, 0.8)';
+                for (let i = 0; i < 10; i++) {
+                    const yon = i % 2 === 0 ? -1 : 1;
+                    const uzak = boyut * (0.4 + 0.5 * r) * (0.6 + sabitRastgele(i) * 0.6);
+                    ctx.beginPath();
+                    ctx.arc(cx + yon * uzak, tabanY - r * 30 * sabitRastgele(i + 5), 3 + 4 * (1 - r), 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+        }
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 22px Arial';
+        ctx.globalAlpha = sinirla(s.t * 2);
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.strokeText('SIRADAKİ KASA', cx, y + 24);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('SIRADAKİ KASA', cx, y + 24);
+        ctx.globalAlpha = 1;
+    } else if (s.evre === 'salla') {
         const t = s.t;
         const boyut = 172;
         const kutuY = y + h * 0.64;
@@ -966,27 +1072,27 @@ function cizItemKarti(ctx: CanvasRenderingContext2D, item: KasaItemi, x: number,
     const metin = `${sayi(item.deger)} DL`;
     ctx.textBaseline = 'middle';
     if (w > h * 1.6) {
-        const ikon = h * 0.8;
-        cizItemGorseli(ctx, item, x + 4 + ikon / 2, y + h / 2 - 1, ikon, false);
+        const ikon = h * 0.9;
+        cizItemGorseli(ctx, item, x + 3 + ikon / 2, y + h / 2 - 1, ikon, false);
         ctx.textAlign = 'center';
-        sigdirFont(ctx, metin, w - ikon - 10, 15, 9);
+        sigdirFont(ctx, metin, w - ikon - 8, 19, 10);
         ctx.fillStyle = '#ffffff';
         ctx.fillText(metin, x + ikon + 4 + (w - ikon - 4) / 2, y + h / 2);
         return;
     }
 
     const isimli = h >= 120;
-    const ikon = Math.min(w * 0.72, h * (isimli ? 0.5 : 0.55));
-    cizItemGorseli(ctx, item, x + w / 2, y + h * 0.38, ikon, false);
+    const ikon = Math.min(w * 0.82, h * (isimli ? 0.52 : 0.62));
+    cizItemGorseli(ctx, item, x + w / 2, y + h * (isimli ? 0.36 : 0.4), ikon, false);
     ctx.textAlign = 'center';
     if (isimli) {
-        ctx.font = 'bold 15px Arial';
+        ctx.font = 'bold 17px Arial';
         ctx.fillStyle = '#c9cbd6';
         ctx.fillText(kisalt(ctx, item.ad, w - 8), x + w / 2, y + h * 0.7);
     }
-    sigdirFont(ctx, metin, w - 8, isimli ? 19 : 17, 10);
+    sigdirFont(ctx, metin, w - 6, isimli ? 22 : 21, 11);
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(metin, x + w / 2, y + h * (isimli ? 0.86 : 0.82));
+    ctx.fillText(metin, x + w / 2, y + h * (isimli ? 0.86 : 0.84));
 }
 
 function cizBosYuva(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
@@ -1001,6 +1107,21 @@ function cizBosYuva(ctx: CanvasRenderingContext2D, x: number, y: number, w: numb
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('?', x + w / 2, y + h / 2 + 1);
+}
+
+// Battle sırasında panelin altındaki envanter: 5'e kadar büyük kare kartlar, fazlası iki sıra yatay kart
+const SAHNE_Y = 90;      // panelin üstüne göre
+const SAHNE_H = 240;
+const ENVANTER_Y = 372;
+const ENVANTER_H = 94;
+function envanterYuvasi(n: number, panelX: number, k: number): { x: number; y: number; w: number; h: number } {
+    const sw = PANEL_W - 30;
+    const tekSira = n <= 5;
+    const w = tekSira ? Math.min(86, (sw - (n - 1) * 8) / n) : (sw - 4 * 8) / 5;
+    const h = tekSira ? ENVANTER_H : (ENVANTER_H - 6) / 2;
+    const sutun = Math.min(n, 5);
+    const basX = panelX + PANEL_W / 2 - (sutun * w + (sutun - 1) * 8) / 2;
+    return { x: basX + (k % 5) * (w + 8), y: B_PANEL_Y + ENVANTER_Y + Math.floor(k / 5) * (h + 6), w, h };
 }
 
 function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0 | 1) {
@@ -1046,12 +1167,12 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
 
     if (!bitti && sahne) {
         // Kutu sahnesi
-        cizSahne(ctx, sahne, sx, y + 94, sw, 252);
+        cizSahne(ctx, sahne, sx, y + SAHNE_Y, sw, SAHNE_H);
 
         // Çıkan item: "Ad  +Değer DL" tek satır
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        const satirY = y + 370;
+        const satirY = y + SAHNE_Y + SAHNE_H + 19;
         if (itemGorundu) {
             const ad = sahne.item.ad;
             const deger = `+${sayi(sahne.item.deger)} DL`;
@@ -1082,20 +1203,50 @@ function cizBattlePaneli(ctx: CanvasRenderingContext2D, d: CizimDurumu, index: 0
             ctx.fillText('? ? ?', x + w / 2, satirY);
         }
 
-        // Şu ana kadar açılanlar: 5'e kadar büyük kare kartlar, fazlası iki sıra yatay kart
+        // Şu ana kadar açılanlar. Geçiş evresinde son item önce sahneden buraya uçuyor,
+        // yerine oturunca kartı kısa bir süre parlıyor.
         const n = d.kasalar.length;
-        const alanY = y + 392;
-        const alanH = 70;
-        const tekSira = n <= 5;
-        const kartW = tekSira ? Math.min(82, (sw - (n - 1) * 8) / n) : (sw - 4 * 8) / 5;
-        const kartH = tekSira ? alanH : (alanH - 6) / 2;
-        const basX = x + w / 2 - (Math.min(n, 5) * kartW + (Math.min(n, 5) - 1) * 8) / 2;
+        const gecis = sahne.evre === 'gecis' && !!sahne.onceki;
+        const ucus = gecis ? sinirla(sahne.t / 0.5) : 1;
+        const sonIndex = oyuncu.acilanlar.length - 1;
         for (let k = 0; k < n; k++) {
-            const kx = basX + (k % 5) * (kartW + 8);
-            const ky = alanY + Math.floor(k / 5) * (kartH + 6);
+            const r = envanterYuvasi(n, x, k);
             const item = oyuncu.acilanlar[k];
-            if (item) cizItemKarti(ctx, item, kx, ky, kartW, kartH);
-            else cizBosYuva(ctx, kx, ky, kartW, kartH);
+            if (!item || (gecis && k === sonIndex && ucus < 1)) {
+                cizBosYuva(ctx, r.x, r.y, r.w, r.h);
+                continue;
+            }
+            if (gecis && k === sonIndex) {
+                ctx.save();
+                ctx.shadowColor = item.renk;
+                ctx.shadowBlur = 30;
+                yuvarlakYol(ctx, r.x - 3, r.y - 3, r.w + 6, r.h + 6, 12);
+                ctx.strokeStyle = item.renk;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.restore();
+            }
+            cizItemKarti(ctx, item, r.x, r.y, r.w, r.h);
+        }
+
+        if (gecis && ucus < 1) {
+            // Uçan item: sahnedeki yerinden envanterdeki yuvasına, küçülerek ve iz bırakarak
+            const r = envanterYuvasi(n, x, sonIndex);
+            const bas = { x: x + w / 2, y: y + SAHNE_Y + SAHNE_H * 0.34, b: 128 };
+            const son = { x: r.x + r.w / 2, y: r.y + r.h / 2, b: Math.min(r.w, r.h) * 0.8 };
+            const konum = (u: number) => {
+                const e = yumusakCikis(u);
+                // Hafif yay çizen yol: önce biraz yükselip sonra yuvaya iniyor
+                return { x: bas.x + (son.x - bas.x) * e, y: bas.y + (son.y - bas.y) * e - Math.sin(e * Math.PI) * 40, b: bas.b + (son.b - bas.b) * e };
+            };
+            for (const [geri, alfa] of [[0.24, 0.2], [0.12, 0.4]] as const) {
+                const p = konum(Math.max(0, ucus - geri));
+                ctx.globalAlpha = alfa;
+                cizItemGorseli(ctx, sahne.onceki!, p.x, p.y, p.b, false);
+            }
+            ctx.globalAlpha = 1;
+            const p = konum(ucus);
+            cizItemGorseli(ctx, sahne.onceki!, p.x, p.y, p.b, true);
         }
     } else {
         // Sonuç: büyük toplam + açılan tüm itemler
@@ -1205,22 +1356,30 @@ function resimOlustur(d: CizimDurumu): AttachmentBuilder {
     return new AttachmentBuilder(canvas.toBuffer('image/jpeg', { quality: 0.9 }), { name: `vs_${Date.now()}.jpg` });
 }
 
-// Animasyonlu tur -> tek seferlik oynayan GIF (döngü yok, son karede durur)
-function gifOlustur(kareler: { d: CizimDurumu; gecikme: number }[]): AttachmentBuilder {
+// Diğer komutlar beklemesin diye uzun işlerin arasında olay döngüsüne nefes aldır
+const nefesAl = () => new Promise<void>(resolve => setImmediate(resolve));
+
+// Animasyonlu tur -> tek seferlik oynayan GIF (döngü yok, son karede durur).
+// Her kareden sonra olay döngüsüne söz veriliyor: ~2 sn'lik üretim sırasında bot donmuyor.
+async function gifOlustur(kareler: { d: CizimDurumu; gecikme: number }[]): Promise<AttachmentBuilder> {
     const W = Math.round(GENISLIK * GIF_OLCEK);
     const H = Math.round(YUKSEKLIK * GIF_OLCEK);
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
-    const goruntuler = kareler.map(k => {
+    const goruntuler: Uint8ClampedArray[] = [];
+    for (const k of kareler) {
         ctx.save();
         ctx.scale(GIF_OLCEK, GIF_OLCEK);
         ekraniCiz(ctx, k.d);
         ctx.restore();
-        return ctx.getImageData(0, 0, W, H).data;
-    });
+        goruntuler.push(ctx.getImageData(0, 0, W, H).data);
+        await nefesAl();
+    }
 
     // Tek ortak palet: sallanma sonu, patlama ve son kareden örnek alınarak çıkarılıyor
-    const ornekKareler = [goruntuler[Math.floor(ZAMANLAMA.sallanmaKaresi * 0.8)], goruntuler[ZAMANLAMA.sallanmaKaresi + 1], goruntuler[goruntuler.length - 1]];
+    const sallanmaSonu = ZAMANLAMA.gecisKaresi + Math.floor(ZAMANLAMA.sallanmaKaresi * 0.8);
+    const patlama = ZAMANLAMA.gecisKaresi + ZAMANLAMA.sallanmaKaresi + 1;
+    const ornekKareler = [goruntuler[sallanmaSonu], goruntuler[patlama], goruntuler[goruntuler.length - 1]];
     const adim = 3;
     const ornek = new Uint8ClampedArray(ornekKareler.length * Math.ceil(W * H / adim) * 4);
     let o = 0;
@@ -1231,12 +1390,14 @@ function gifOlustur(kareler: { d: CizimDurumu; gecikme: number }[]): AttachmentB
     }
     const palet = gifenc.quantize(ornek.subarray(0, o), 256);
 
+    await nefesAl();
     const gif = gifenc.GIFEncoder();
-    goruntuler.forEach((g, i) => {
-        gif.writeFrame(gifenc.applyPalette(g, palet), W, H, i === 0
+    for (let i = 0; i < goruntuler.length; i++) {
+        gif.writeFrame(gifenc.applyPalette(goruntuler[i], palet), W, H, i === 0
             ? { palette: palet, delay: kareler[i].gecikme, repeat: -1 }
             : { delay: kareler[i].gecikme });
-    });
+        await nefesAl();
+    }
     gif.finish();
     return new AttachmentBuilder(Buffer.from(gif.bytes()), { name: `vs_${Date.now()}.gif` });
 }
@@ -1248,6 +1409,7 @@ function turKareleri(
     sonra: [OyuncuGorunumu, OyuncuGorunumu],
     kasa: Kasa,
     itemler: [KasaItemi, KasaItemi],
+    oncekiler: [KasaItemi | null, KasaItemi | null],
     fazlar: [number, number]
 ): { d: CizimDurumu; gecikme: number }[] {
     const kareler: { d: CizimDurumu; gecikme: number }[] = [];
@@ -1260,14 +1422,15 @@ function turKareleri(
                 ...temel,
                 oyuncular,
                 sahneler: [
-                    { kasa, item: itemler[0], evre, t, kare, faz: fazlar[0] },
-                    { kasa, item: itemler[1], evre, t, kare, faz: fazlar[1] }
+                    { kasa, item: itemler[0], evre, t, kare, faz: fazlar[0], onceki: oncekiler[0] },
+                    { kasa, item: itemler[1], evre, t, kare, faz: fazlar[1], onceki: oncekiler[1] }
                 ],
                 altYazi: `Havuz: ${sayi(oyuncular[0].toplam + oyuncular[1].toplam)} DL`
             }
         });
         kare++;
     };
+    for (let i = 0; i < ZAMANLAMA.gecisKaresi; i++) ekle('gecis', i / (ZAMANLAMA.gecisKaresi - 1), ZAMANLAMA.gecisGecikme);
     for (let i = 0; i < ZAMANLAMA.sallanmaKaresi; i++) ekle('salla', i / (ZAMANLAMA.sallanmaKaresi - 1), ZAMANLAMA.sallanmaGecikme);
     [0, 0.5, 1].forEach(t => ekle('patla', t, 70));
     for (let i = 1; i <= ZAMANLAMA.yukselmeKaresi; i++) ekle('yuksel', i / ZAMANLAMA.yukselmeKaresi, ZAMANLAMA.yukselmeGecikme);
@@ -1420,19 +1583,28 @@ export class VsCommand implements Command {
 
         if (!interaction.channel || !interaction.channel.isTextBased()) return;
 
+        try {
+            yarimKalanlariIadeEt();
+        } catch (err) {
+            console.error('[vs] Yarım kalan battle iadeleri yapılamadı:', err);
+        }
+
         if (aktifOynayanlar.has(userId)) {
             await interaction.editReply({ content: '❌ Zaten devam eden bir battle\'ın var! Önce onu bitir.' });
             return;
         }
         aktifOynayanlar.add(userId);
 
-        // --- ZIRH 2: PARA TAKİBİ ---
+        // --- PARA TAKİBİ ---
         // Kimden ne kadar alındığı burada tutuluyor. Beklenmeyen bir hata olursa catch bloğu,
         // ödeme henüz yapılmadıysa herkese yatırdığını geri veriyor.
         let kurucuUcreti = 0;
         let rakip: User | null = null;
         let rakipUcreti = 0;
         let odemeYapildi = false;
+        let battleSayildi = false;
+        let gameMessage: Message | null = null;
+        const battleId = interaction.id;
 
         try {
             const ilkKasa = KASA_MAP.get(interaction.options.getString('kasa', true));
@@ -1441,7 +1613,7 @@ export class VsCommand implements Command {
                 return;
             }
             const adet = interaction.options.getInteger('adet', true);
-            let kasalar: Kasa[] = Array.from({ length: Math.min(adet, MAX_KASA) }, () => ilkKasa);
+            let kasalar: Kasa[] = Array.from({ length: Math.max(1, Math.min(adet, MAX_KASA)) }, () => ilkKasa);
 
             const kurucu: OyuncuGorunumu = {
                 isim: interaction.user.displayName,
@@ -1464,13 +1636,14 @@ export class VsCommand implements Command {
             // ==================================================
             // 1) KURULUM: kurucu kasaları seçer (para henüz alınmadı)
             // ==================================================
-            const gameMessage = await interaction.editReply(kurulumEkrani());
+            const mesaj = await interaction.editReply(kurulumEkrani());
+            gameMessage = mesaj;
 
             let yayinlandi = false;
             while (!yayinlandi) {
-                const i = await bilesenBekle(gameMessage, KURULUM_SURESI, sadeceKurucu(userId));
+                const i = await bilesenBekle(mesaj, KURULUM_SURESI, sadeceKurucu(userId));
                 if (!i) {
-                    await gameMessage.edit(iptalMesaji('⌛ Kurulum süresi doldu, battle iptal edildi.')).catch(() => { });
+                    await mesaj.edit(iptalMesaji('⌛ Kurulum süresi doldu, battle iptal edildi.')).catch(() => { });
                     return;
                 }
 
@@ -1489,18 +1662,19 @@ export class VsCommand implements Command {
                     return;
                 } else if (i.customId === 'vs_yayinla') {
                     if (kasalar.length === 0) {
-                        await i.reply({ content: '❌ En az 1 kasa eklemelisin.', ephemeral: true });
+                        await i.reply({ content: '❌ En az 1 kasa eklemelisin.', ephemeral: true }).catch(() => { });
                         continue;
                     }
                     const ucret = toplamFiyat(kasalar);
                     // Bakiye kontrolü + kesinti tek adımda (Mines/Tower ile aynı desen)
                     if (!dbManager.removeDL(userId, ucret)) {
-                        await i.reply({ content: `❌ Yetersiz bakiye! Giriş ücreti **${ucret}** ${DL}, bakiyen: **${dbManager.getDL(userId)}** ${DL}`, ephemeral: true });
+                        await i.reply({ content: `❌ Yetersiz bakiye! Giriş ücreti **${ucret}** ${DL}, bakiyen: **${dbManager.getDL(userId)}** ${DL}`, ephemeral: true }).catch(() => { });
                         continue;
                     }
                     kurucuUcreti = ucret;
+                    emanetEkle(battleId, userId, ucret);
                     yayinlandi = true;
-                    await i.deferUpdate();
+                    await i.deferUpdate().catch(() => { });
                 }
             }
 
@@ -1509,43 +1683,55 @@ export class VsCommand implements Command {
             // ==================================================
             const ucret = kurucuUcreti;
             const lobiBitis = Date.now() + LOBI_SURESI;
-            await gameMessage.edit(mesajHazirla(bekleyenEkran('lobi'), lobiMetni(userId, kasalar, ucret, lobiBitis), lobiBilesenleri(ucret)));
+            await mesaj.edit(mesajHazirla(bekleyenEkran('lobi'), lobiMetni(userId, kasalar, ucret, lobiBitis), lobiBilesenleri(ucret)));
 
             while (!rakip) {
                 const kalan = lobiBitis - Date.now();
                 // Lobi süresi tıklamalarla uzamasın diye her seferinde kalan süre kadar bekliyoruz
-                const i = kalan > 0 ? await bilesenBekle(gameMessage, kalan) : null;
+                const i = kalan > 0 ? await bilesenBekle(mesaj, kalan) : null;
 
                 if (!i) {
+                    emanetKapat(battleId, userId);
                     dbManager.addDL(userId, kurucuUcreti);
                     kurucuUcreti = 0;
-                    await gameMessage.edit(iptalMesaji(`⌛ Kimse katılmadı. **${ucret}** ${DL} <@${userId}> kullanıcısına iade edildi.`)).catch(() => { });
+                    await mesaj.edit(iptalMesaji(`⌛ Kimse katılmadı. **${ucret}** ${DL} <@${userId}> kullanıcısına iade edildi.`)).catch(() => { });
                     return;
                 }
 
                 if (i.customId === 'vs_lobi_iptal') {
                     if (i.user.id !== userId) {
-                        await i.reply({ content: '❌ Battle\'ı sadece açan kişi iptal edebilir.', ephemeral: true });
+                        await i.reply({ content: '❌ Battle\'ı sadece açan kişi iptal edebilir.', ephemeral: true }).catch(() => { });
                         continue;
                     }
+                    emanetKapat(battleId, userId);
                     dbManager.addDL(userId, kurucuUcreti);
                     kurucuUcreti = 0;
-                    await i.update(iptalMesaji(`Battle iptal edildi. **${ucret}** ${DL} iade edildi.`));
+                    await i.update(iptalMesaji(`Battle iptal edildi. **${ucret}** ${DL} iade edildi.`)).catch(() => { });
                     return;
                 }
 
                 if (i.customId !== 'vs_katil') continue;
 
+                // Reddetme cevapları battle'ı bozmasın: etkileşim zaman aşımına uğradıysa sessizce geç
+                const reddet = (metin: string) => i.reply({ content: metin, ephemeral: true }).catch(() => { });
+                if (i.user.bot) {
+                    await reddet('❌ Botlar battle\'a katılamaz.');
+                    continue;
+                }
                 if (i.user.id === userId) {
-                    await i.reply({ content: '❌ Kendi battle\'ına katılamazsın.', ephemeral: true });
+                    await reddet('❌ Kendi battle\'ına katılamazsın.');
                     continue;
                 }
                 if (aktifOynayanlar.has(i.user.id)) {
-                    await i.reply({ content: '❌ Zaten devam eden bir battle\'ın var.', ephemeral: true });
+                    await reddet('❌ Zaten devam eden bir battle\'ın var.');
+                    continue;
+                }
+                if (oynananBattleSayisi >= MAX_ESZAMANLI_BATTLE) {
+                    await reddet('⏳ Şu an çok fazla battle oynanıyor, birkaç saniye sonra tekrar dene. Lobi açık kalmaya devam ediyor.');
                     continue;
                 }
                 if (!dbManager.removeDL(i.user.id, ucret)) {
-                    await i.reply({ content: `❌ Yetersiz bakiye! Katılmak için **${ucret}** ${DL} gerekiyor, bakiyen: **${dbManager.getDL(i.user.id)}** ${DL}`, ephemeral: true });
+                    await reddet(`❌ Yetersiz bakiye! Katılmak için **${ucret}** ${DL} gerekiyor, bakiyen: **${dbManager.getDL(i.user.id)}** ${DL}`);
                     continue;
                 }
 
@@ -1554,8 +1740,11 @@ export class VsCommand implements Command {
                 rakip = i.user;
                 rakipUcreti = ucret;
                 aktifOynayanlar.add(rakip.id);
+                oynananBattleSayisi++;
+                battleSayildi = true;
+                emanetEkle(battleId, rakip.id, ucret);
                 // Butonları hemen kaldır; ilk turun animasyonu hazırlanırken lobi resmi ekranda kalır
-                await i.update({ content: `## ⚔️ <@${userId}> vs <@${rakip.id}>\nRakip bulundu, kasalar hazırlanıyor...`, components: [], allowedMentions: { parse: [] } });
+                await i.update({ content: `## ⚔️ <@${userId}> vs <@${rakip.id}>\nRakip bulundu, kasalar hazırlanıyor...`, components: [], allowedMentions: { parse: [] } }).catch(() => { });
             }
 
             // ==================================================
@@ -1566,9 +1755,11 @@ export class VsCommand implements Command {
             const havuz = toplamlar[0] + toplamlar[1];
             const kazanan: 0 | 1 | -1 = toplamlar[0] > toplamlar[1] ? 0 : (toplamlar[1] > toplamlar[0] ? 1 : -1);
 
-            // --- ZIRH 3: ÖDEME ANİMASYONDAN ÖNCE ---
+            // --- ZIRH 4: ÖDEME ANİMASYONDAN ÖNCE ---
             // Sonuç zaten belli; animasyon sadece gösterim. Bot animasyonun ortasında
             // çökse ya da mesaj silinse bile kimse parasını kaybetmez.
+            // Emanet kaydı ödemeden hemen önce kapatılıyor: hiçbir durumda iki kere ödenmez.
+            emanetKapat(battleId);
             if (kazanan === -1) {
                 dbManager.addDL(userId, toplamlar[0]);
                 dbManager.addDL(rakip.id, toplamlar[1]);
@@ -1596,7 +1787,7 @@ export class VsCommand implements Command {
                 const icerik = mesajHazirla(gorsel, metin, []);
                 await bekle(Math.max(0, oncekiKareSuresi - (Date.now() - oncekiKareZamani)));
                 try {
-                    await gameMessage.edit(icerik);
+                    await mesaj.edit(icerik);
                 } catch {
                     return false; // mesaj silindiyse animasyonu bırak, ödeme zaten yapıldı
                 }
@@ -1615,11 +1806,13 @@ export class VsCommand implements Command {
                 })) as [OyuncuGorunumu, OyuncuGorunumu];
                 const kareler = turKareleri(
                     { asama: 'battle', kasalar, aktifTur: tur },
-                    durum, sonraki, kasa, sonuclar[tur], [Math.random() * 6, Math.random() * 6]
+                    durum, sonraki, kasa, sonuclar[tur],
+                    tur === 0 ? [null, null] : sonuclar[tur - 1],
+                    [Math.random() * 6, Math.random() * 6]
                 );
                 const animasyonSuresi = kareler.reduce((t, k) => t + k.gecikme, 0);
                 const metin = `### ⚔️ Tur ${tur + 1}/${kasalar.length} — ${kasa.emoji} ${kasa.ad}\n<@${userId}> **vs** <@${rakipId}>`;
-                if (!await goster(gifOlustur(kareler), metin, animasyonSuresi + sonucuGoster)) break;
+                if (!await goster(await gifOlustur(kareler), metin, animasyonSuresi + sonucuGoster)) break;
                 durum = sonraki;
             }
 
@@ -1636,7 +1829,7 @@ export class VsCommand implements Command {
             const kazananIsim = kazanan === -1 ? '' : oyuncular[kazanan].isim;
             const kazananId = kazanan === 0 ? userId : rakipId;
             const bitisMetni = [
-                kazanan === -1 ? '## 🤝 Berabere!' : `## 🏆 ${kazananIsim} kazandı!`,
+                kazanan === -1 ? '## 🤝 Berabere!' : `## 🏆 <@${kazananId}> kazandı!`,
                 `<@${userId}> **${toplamlar[0]}** ${DL}  vs  <@${rakipId}> **${toplamlar[1]}** ${DL}`,
                 kazanan === -1
                     ? `**Giriş Ücreti:** ${ucret} ${DL} (kişi başı)  •  Herkes kendi açtığını aldı.`
@@ -1654,14 +1847,29 @@ export class VsCommand implements Command {
         } catch (err) {
             // Beklenmeyen hata: ödeme yapılmadıysa alınan giriş ücretlerini geri ver
             if (!odemeYapildi) {
-                if (kurucuUcreti > 0) dbManager.addDL(userId, kurucuUcreti);
-                if (rakip && rakipUcreti > 0) dbManager.addDL(rakip.id, rakipUcreti);
+                // Emanet kaydı kapatılamaz ama dosyada duruyorsa iadeyi burada YAPMIYORUZ:
+                // bot yeniden açılınca otomatik iade edilecek (iki kere ödenmesin).
+                // Kayıt hiç yazılamamışsa (dosya hatası) iade doğrudan burada yapılır.
+                let buradaIadeEt = true;
+                try {
+                    emanetKapat(battleId);
+                } catch {
+                    buradaIadeEt = !emanetleriOku().some(e => e.battle === battleId);
+                    if (!buradaIadeEt) console.error(`[vs] ${battleId} emanet kaydı kapatılamadı; iade bot yeniden başlayınca otomatik yapılacak`);
+                }
+                if (buradaIadeEt) {
+                    if (kurucuUcreti > 0) dbManager.addDL(userId, kurucuUcreti);
+                    if (rakip && rakipUcreti > 0) dbManager.addDL(rakip.id, rakipUcreti);
+                }
+                const iadeMetni = rakipUcreti > 0 ? 'Yatırılan DL iki oyuncuya da iade edildi.' : (kurucuUcreti > 0 ? 'Yatırılan DL iade edildi.' : '');
+                await gameMessage?.edit(iptalMesaji(`⚠️ Beklenmeyen bir hata oluştu, battle iptal edildi. ${iadeMetni}`)).catch(() => { });
             }
             throw err;
         } finally {
-            // --- ZIRH 4: HER DURUMDA KİLİTLERİ AÇ ---
+            // --- ZIRH 5: HER DURUMDA KİLİTLERİ AÇ ---
             aktifOynayanlar.delete(userId);
             if (rakip) aktifOynayanlar.delete(rakip.id);
+            if (battleSayildi) oynananBattleSayisi--;
         }
     }
 }

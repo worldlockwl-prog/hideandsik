@@ -84,5 +84,15 @@ uyarı çıkar.
 
 ## Animasyon hızı
 
-`vs.ts` içindeki `ZAMANLAMA` sabiti: sallanma kare sayısı/süresi, item'in yükselme hızı ve
-item çıktıktan sonra bir sonraki tura geçmeden önceki bekleme.
+`vs.ts` içindeki `ZAMANLAMA` sabiti: tur başı geçişi (önceki item envantere uçar, yeni sandık
+düşer), sallanma kare sayısı/süresi, item'in yükselme hızı ve item çıktıktan sonra bir sonraki
+tura geçmeden önceki bekleme.
+
+## Güvenlik notları
+
+- **Emanet (`emanet.json`)**: oyuncudan düşülen ama henüz ödenmemiş/iade edilmemiş her giriş
+  ücreti bu dosyaya yazılır. Bot lobi ya da battle sırasında çöker/yeniden başlarsa, açılışta
+  dosyada kalan tutarlar sahiplerine otomatik iade edilir (konsola `Yarım kalan battle iadesi`
+  yazar). Bu dosyayı elle düzenleme; normalde hep boş (`[]`) durur. Bot bu klasöre yazabilmeli.
+- **Aynı anda en fazla 3 battle** animasyona girer (`MAX_ESZAMANLI_BATTLE`). Sınır doluyken
+  lobiler açık kalır, "Katıl"a basan kişiye birazdan tekrar denemesi söylenir.
