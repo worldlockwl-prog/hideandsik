@@ -115,8 +115,8 @@ const MAX_KASA = 10;
 const KURULUM_SURESI = 90_000;   // kurucu bu süre boyunca hiçbir şeye basmazsa kurulum iptal
 const LOBI_SURESI = 120_000;     // bu sürede rakip katılmazsa battle iptal + iade
 
-// Tur başına iki kare: kutu sallanıyor -> kutu açıldı. Süreler mesaj düzenleme süresini de
-// kapsar (düzenleme 400ms sürdüyse sadece kalan kadar beklenir), yani tur ~4 sn.
+// Tur başına iki kare: kutu sallanıyor -> kutu açıldı. Süreler, karenin Discord'a ulaştıktan
+// sonra ekranda kalma süresi (mesaj düzenleme süresi bunun üstüne eklenir), tur ~4.5 sn.
 // Hızlandırmak/yavaşlatmak için sadece bu sayıları değiştir (milisaniye).
 function kareSureleri(kasaSayisi: number): { sallanma: number; acilis: number } {
     return kasaSayisi > 5 ? { sallanma: 1300, acilis: 2100 } : { sallanma: 1600, acilis: 2600 };
@@ -402,113 +402,172 @@ function cizItemGorseli(ctx: CanvasRenderingContext2D, item: KasaItemi, cx: numb
     ctx.restore();
 }
 
-// Kasa: PNG'si varsa o, yoksa kasanın renginde çizilmiş sandık.
-// acik=true iken kapak havaya fırlamış, içinden ışık hüzmesi çıkıyor.
+// Kasa: PNG'si varsa o, yoksa kasanın renginde çizilmiş sandık. (cx, cy) gövdenin ortası.
+// acik=false: kubbe kapaklı kapalı sandık, kapak aralığından ışık sızar.
+// acik=true : kapak arkaya açılmış (iç yüzü görünür), ağızdan isikRengi'nde ışık yükselir.
 function cizKutu(ctx: CanvasRenderingContext2D, kasa: Kasa, cx: number, cy: number, boyut: number, aci: number, acik: boolean, isikRengi: string) {
     const w = boyut;
-    const h = boyut * 0.62;
-    const kapakH = boyut * 0.24;
-    const govdeUst = cy - h / 2;
+    const gH = boyut * 0.46;   // gövde yüksekliği
+    const kH = boyut * 0.26;   // kapak yüksekliği
+    const ust = -gH / 2;       // gövdenin üst kenarı (yerel koordinat)
+    const ana = kasa.renk;
+    const koyu = renkTon(ana, -0.62);
+    const altin = '#ffcf40';
 
     ctx.save();
     // Zemin gölgesi
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
     ctx.beginPath();
-    ctx.ellipse(cx, cy + h / 2 + 8, w * 0.55, 10, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, cy + gH / 2 + 6, w * 0.56, 11, 0, 0, Math.PI * 2);
     ctx.fill();
-
-    if (acik) {
-        // İçeriden yukarı yükselen ışık
-        const isik = ctx.createLinearGradient(0, govdeUst, 0, govdeUst - boyut * 1.3);
-        isik.addColorStop(0, isikRengi + 'cc');
-        isik.addColorStop(1, isikRengi + '00');
-        ctx.fillStyle = isik;
-        ctx.beginPath();
-        ctx.moveTo(cx - w * 0.42, govdeUst);
-        ctx.lineTo(cx + w * 0.42, govdeUst);
-        ctx.lineTo(cx + w * 0.75, govdeUst - boyut * 1.3);
-        ctx.lineTo(cx - w * 0.75, govdeUst - boyut * 1.3);
-        ctx.closePath();
-        ctx.fill();
-    }
 
     ctx.translate(cx, cy);
     ctx.rotate(aci);
 
     if (kasa.resim) {
+        if (acik) {
+            cizHuzme(ctx, w, ust, isikRengi);
+            cizAgiz(ctx, w, ust, isikRengi);
+        }
         const olcek = Math.min(boyut / kasa.resim.width, boyut / kasa.resim.height);
-        const iw = kasa.resim.width * olcek;
-        const ih = kasa.resim.height * olcek;
-        if (acik) ctx.globalAlpha = 0.85;
-        ctx.drawImage(kasa.resim, -iw / 2, -ih / 2, iw, ih);
+        ctx.drawImage(kasa.resim, -kasa.resim.width * olcek / 2, -kasa.resim.height * olcek / 2, kasa.resim.width * olcek, kasa.resim.height * olcek);
         ctx.restore();
         return;
     }
 
-    const govde = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
-    govde.addColorStop(0, renkTon(kasa.renk, 0.15));
-    govde.addColorStop(1, renkTon(kasa.renk, -0.45));
-
-    const kapak = ctx.createLinearGradient(0, -kapakH, 0, 0);
-    kapak.addColorStop(0, renkTon(kasa.renk, 0.35));
-    kapak.addColorStop(1, renkTon(kasa.renk, -0.1));
-    const cizKapak = () => {
-        yuvarlakYol(ctx, -w / 2 - 6, -kapakH, w + 12, kapakH, 10);
-        ctx.fillStyle = kapak;
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.stroke();
-        ctx.fillStyle = renkTon(kasa.renk, -0.6);
-        ctx.fillRect(-w * 0.08, -kapakH, w * 0.16, kapakH);
-    };
+    // Dikey metal şeritler (kapak + gövde aynı hizada)
+    const seritX = [-w * 0.3, w * 0.3];
+    const seritW = w * 0.075;
 
     if (acik) {
-        // Kapak fırlayıp kasanın sol arkasına yaslanmış (gövdenin arkasında kalsın diye önce çiziliyor)
-        ctx.save();
-        ctx.translate(-w * 0.58, -h * 0.12);
-        ctx.rotate(-0.55);
-        ctx.translate(0, kapakH / 2);
-        cizKapak();
-        ctx.restore();
-        // Açık ağız (iç kısım)
-        ctx.fillStyle = renkTon(kasa.renk, -0.75);
+        cizHuzme(ctx, w, ust, isikRengi);
+        // Kapağın iç yüzü: gövdenin arkasında dik duran, yukarı doğru hafif daralan levha
+        const kapakUst = ust - kH * 1.6;
         ctx.beginPath();
-        ctx.ellipse(0, -h / 2, w / 2 - 4, 10, 0, 0, Math.PI * 2);
+        ctx.moveTo(-w / 2 + 2, ust);
+        ctx.lineTo(-w / 2 + 16, kapakUst + 14);
+        ctx.quadraticCurveTo(-w / 2 + 18, kapakUst, -w / 2 + 32, kapakUst);
+        ctx.lineTo(w / 2 - 32, kapakUst);
+        ctx.quadraticCurveTo(w / 2 - 18, kapakUst, w / 2 - 16, kapakUst + 14);
+        ctx.lineTo(w / 2 - 2, ust);
+        ctx.closePath();
+        const ic = ctx.createLinearGradient(0, kapakUst, 0, ust);
+        ic.addColorStop(0, renkTon(ana, -0.35));
+        ic.addColorStop(1, renkTon(ana, -0.75));
+        ctx.fillStyle = ic;
         ctx.fill();
+        // İçeriden vuran ışık kapağın alt kısmını aydınlatıyor
+        const yansima = ctx.createLinearGradient(0, ust, 0, kapakUst);
+        yansima.addColorStop(0, isikRengi + '99');
+        yansima.addColorStop(1, isikRengi + '00');
+        ctx.fillStyle = yansima;
+        ctx.fill();
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = renkTon(ana, 0.15);
+        ctx.stroke();
+        ctx.fillStyle = koyu;
+        for (const sx of seritX) ctx.fillRect(sx * 0.9 - seritW / 2, kapakUst + 3, seritW, ust - kapakUst - 3);
+
+        cizAgiz(ctx, w, ust, isikRengi);
     }
 
     // Gövde
-    yuvarlakYol(ctx, -w / 2, -h / 2, w, h, 10);
+    const govde = ctx.createLinearGradient(0, ust, 0, gH / 2);
+    govde.addColorStop(0, renkTon(ana, 0.1));
+    govde.addColorStop(1, renkTon(ana, -0.5));
+    yuvarlakYol(ctx, -w / 2, ust, w, gH, 12);
     ctx.fillStyle = govde;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = renkTon(ana, -0.55);
     ctx.stroke();
-    // Dikey şerit + kilit
-    ctx.fillStyle = renkTon(kasa.renk, -0.6);
-    ctx.fillRect(-w * 0.08, -h / 2, w * 0.16, h);
-    yuvarlakYol(ctx, -w * 0.09, -h / 2 + 4, w * 0.18, h * 0.32, 5);
-    ctx.fillStyle = '#ffd34d';
-    ctx.fill();
-    ctx.fillStyle = '#3a2a00';
-    ctx.beginPath();
-    ctx.arc(0, -h / 2 + 4 + h * 0.12, w * 0.022, 0, Math.PI * 2);
-    ctx.fill();
+    // Üst ve alt kenar şeridi
+    ctx.fillStyle = koyu;
+    ctx.fillRect(-w / 2 + 3, ust, w - 6, gH * 0.12);
+    ctx.fillRect(-w / 2 + 3, gH / 2 - gH * 0.12, w - 6, gH * 0.12);
+    for (const sx of seritX) ctx.fillRect(sx - seritW / 2, ust, seritW, gH);
+    // Köşe perçinleri
+    ctx.fillStyle = altin;
+    for (const px of [-w / 2 + 10, w / 2 - 10]) {
+        for (const py of [ust + gH * 0.3, gH / 2 - gH * 0.25]) {
+            ctx.beginPath();
+            ctx.arc(px, py, Math.max(2.5, w * 0.014), 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
 
     if (!acik) {
-        // Kapak
-        ctx.save();
-        ctx.translate(0, -h / 2 + 2);
-        cizKapak();
-        ctx.restore();
+        // Kubbe kapak
+        yuvarlakYol(ctx, -w / 2 - 4, ust - kH, w + 8, kH + 8, kH * 0.7);
+        const kapak = ctx.createLinearGradient(0, ust - kH, 0, ust);
+        kapak.addColorStop(0, renkTon(ana, 0.35));
+        kapak.addColorStop(1, renkTon(ana, -0.15));
+        ctx.fillStyle = kapak;
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = renkTon(ana, -0.55);
+        ctx.stroke();
+        ctx.fillStyle = koyu;
+        for (const sx of seritX) ctx.fillRect(sx - seritW / 2, ust - kH + 4, seritW, kH - 2);
+        // Parlama
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-w / 2 + kH * 0.7, ust - kH + 6);
+        ctx.lineTo(w / 2 - kH * 0.7, ust - kH + 6);
+        ctx.stroke();
         // Kapak aralığından sızan ışık: "açılmak üzere"
-        ctx.shadowColor = '#ffffff';
-        ctx.shadowBlur = 25;
+        ctx.shadowColor = isikRengi;
+        ctx.shadowBlur = 28;
         ctx.fillStyle = '#fff6d6';
-        ctx.fillRect(-w / 2 + 6, -h / 2 - 1, w - 12, 4);
+        ctx.fillRect(-w / 2 + 4, ust + 1, w - 8, 4);
         ctx.shadowBlur = 0;
     }
+
+    // Kilit
+    const kilitW = w * 0.15;
+    const kilitH = gH * 0.42;
+    const kilitY = acik ? ust + 3 : ust - kilitH * 0.35;
+    yuvarlakYol(ctx, -kilitW / 2, kilitY, kilitW, kilitH, 6);
+    ctx.fillStyle = altin;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#a77800';
+    ctx.stroke();
+    ctx.fillStyle = '#3a2a00';
+    ctx.beginPath();
+    ctx.arc(0, kilitY + kilitH * 0.42, kilitW * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(-kilitW * 0.05, kilitY + kilitH * 0.42, kilitW * 0.1, kilitH * 0.3);
     ctx.restore();
+}
+
+// Açık sandıktan yukarı yükselen ışık hüzmesi (kapağın arkasında kalır)
+function cizHuzme(ctx: CanvasRenderingContext2D, w: number, ust: number, renk: string) {
+    const huzmeBoyu = w * 1.6;
+    const huzme = ctx.createLinearGradient(0, ust, 0, ust - huzmeBoyu);
+    huzme.addColorStop(0, renk + 'b0');
+    huzme.addColorStop(1, renk + '00');
+    ctx.fillStyle = huzme;
+    ctx.beginPath();
+    ctx.moveTo(-w * 0.42, ust);
+    ctx.lineTo(w * 0.42, ust);
+    ctx.lineTo(w * 0.72, ust - huzmeBoyu);
+    ctx.lineTo(-w * 0.72, ust - huzmeBoyu);
+    ctx.closePath();
+    ctx.fill();
+}
+
+// Açık sandığın ağzı: içeriden parlayan ışık
+function cizAgiz(ctx: CanvasRenderingContext2D, w: number, ust: number, renk: string) {
+    const agiz = ctx.createRadialGradient(0, ust, 2, 0, ust, w * 0.48);
+    agiz.addColorStop(0, '#ffffff');
+    agiz.addColorStop(0.35, renk);
+    agiz.addColorStop(1, renkTon(renk, -0.6));
+    ctx.fillStyle = agiz;
+    ctx.beginPath();
+    ctx.ellipse(0, ust, w / 2 - 6, w * 0.075, 0, 0, Math.PI * 2);
+    ctx.fill();
 }
 
 // Kurulum/lobi üst şeridi: sıradaki kasalar
@@ -674,7 +733,7 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
         ctx.fillText('KASA AÇILIYOR...', cx, y + 30);
     } else {
         const item = sahne.item;
-        const itemY = y + h * 0.47;
+        const itemY = y + h * 0.36;
         // Nadirlik yükseldikçe efekt büyüyor: Sıradan sade, Efsanevi tam ışık şöleni
         const guc = [0, 0.3, 0.45, 0.7, 1][item.seviye];
         const glow = ctx.createRadialGradient(cx, itemY, 10, cx, itemY, w * 0.55);
@@ -684,8 +743,8 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
         ctx.fillRect(x, y, w, h);
         if (guc > 0) cizIsinlar(ctx, cx, itemY, w * 0.62, item.renk, guc);
 
-        cizKutu(ctx, sahne.kasa, cx, y + h - 46, 140, 0, true, item.renk);
-        cizItemGorseli(ctx, item, cx, itemY, 175, true);
+        cizKutu(ctx, sahne.kasa, cx, y + h - 48, 170, 0, true, item.renk);
+        cizItemGorseli(ctx, item, cx, itemY, 132, true);
 
         if (item.seviye >= 3) {
             cizParilti(ctx, cx - 125, itemY - 55, 13, item.renk);
@@ -693,7 +752,9 @@ function cizSahne(ctx: CanvasRenderingContext2D, sahne: KutuSahnesi, x: number, 
             cizParilti(ctx, cx + 100, itemY + 70, 7, item.renk);
             cizParilti(ctx, cx - 105, itemY + 65, 8, '#ffffff');
         }
-        cizEtiket(ctx, NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR'), cx, y + 30, item.renk, 20);
+        const nadirlik = NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR');
+        ctx.font = 'bold 20px Arial';
+        cizEtiket(ctx, nadirlik, x + 16 + (ctx.measureText(nadirlik).width + 44) / 2, y + 30, item.renk, 20);
     }
     ctx.restore();
 }
@@ -893,8 +954,9 @@ function battleCiz(d: CizimDurumu): AttachmentBuilder {
     }
     cizAltYazi(ctx, d.altYazi, d.asama === 'bitti' ? '#ffd700' : '#c9cbd6');
 
-    // Limbo'daki gibi her karede farklı isim: Discord eski resmi önbellekten göstermesin
-    return new AttachmentBuilder(canvas.toBuffer('image/png'), { name: `vs_${Date.now()}.png` });
+    // PNG yerine JPEG: dosya ~4 kat küçük, Discord'da kare yüklenmeden bir sonrakine geçilmiyor.
+    // Limbo'daki gibi her karede farklı isim: Discord eski resmi önbellekten göstermesin.
+    return new AttachmentBuilder(canvas.toBuffer('image/jpeg', { quality: 0.9 }), { name: `vs_${Date.now()}.jpg` });
 }
 
 async function avatarYukle(user: User): Promise<Image | null> {
@@ -1205,16 +1267,22 @@ export class VsCommand implements Command {
             const rakipId = rakip.id;
             const sure = kareSureleri(kasalar.length);
 
-            const goster = async (d: CizimDurumu, metin: string): Promise<boolean> => {
+            // Her kare, mesaj düzenlemesi Discord'a ulaştıktan SONRA en az `ekrandaKal` ms görünür kalır.
+            // Bir sonraki kare bu bekleme sırasında çiziliyor, böylece çizim süresi araya eklenmiyor.
+            let oncekiKareZamani = 0;
+            let oncekiKareSuresi = 0;
+            const goster = async (d: CizimDurumu, metin: string, ekrandaKal: number): Promise<boolean> => {
+                const icerik = mesajHazirla(d, metin, []);
+                await bekle(Math.max(0, oncekiKareSuresi - (Date.now() - oncekiKareZamani)));
                 try {
-                    await gameMessage.edit(mesajHazirla(d, metin, []));
-                    return true;
+                    await gameMessage.edit(icerik);
                 } catch {
                     return false; // mesaj silindiyse animasyonu bırak, ödeme zaten yapıldı
                 }
+                oncekiKareZamani = Date.now();
+                oncekiKareSuresi = ekrandaKal;
+                return true;
             };
-            // Mesaj düzenleme süresi de beklemeye sayılır: hedef süre zaten dolduysa hiç beklenmez
-            const kalaniBekle = (baslangic: number, ms: number) => bekle(Math.max(0, ms - (Date.now() - baslangic)));
 
             animasyon:
             for (let tur = 0; tur < kasalar.length; tur++) {
@@ -1232,17 +1300,13 @@ export class VsCommand implements Command {
                     altYazi: `Havuz: ${sayi(oyuncular[0].toplam + oyuncular[1].toplam)} DL`
                 });
 
-                let t = Date.now();
-                if (!await goster(ekran('sallaniyor'), metin)) break animasyon;
-                await kalaniBekle(t, sure.sallanma);
+                if (!await goster(ekran('sallaniyor'), metin, sure.sallanma)) break animasyon;
 
                 for (const o of [0, 1] as const) {
                     oyuncular[o].acilanlar.push(sonuclar[tur][o]);
                     oyuncular[o].toplam += sonuclar[tur][o].deger;
                 }
-                t = Date.now();
-                if (!await goster(ekran('acildi'), metin)) break animasyon;
-                await kalaniBekle(t, sure.acilis);
+                if (!await goster(ekran('acildi'), metin, sure.acilis)) break animasyon;
             }
 
             // ==================================================
@@ -1271,7 +1335,7 @@ export class VsCommand implements Command {
                 oyuncular,
                 kazanan,
                 altYazi: kazanan === -1 ? '🤝 Berabere! Herkes kendi açtığını aldı.' : `🏆 ${kazananIsim} ${sayi(havuz)} DL kazandı!`
-            }, bitisMetni);
+            }, bitisMetni, 0);
         } catch (err) {
             // Beklenmeyen hata: ödeme yapılmadıysa alınan giriş ücretlerini geri ver
             if (!odemeYapildi) {
