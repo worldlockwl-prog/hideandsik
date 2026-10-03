@@ -385,7 +385,11 @@ end
 local memCache, memCount = {}, 0
 local inflight = {}
 
-local today = os.date("%Y-%m-%d")
+local function dayKey()
+    return tostring(math.floor(os.time() / 86400))
+end
+
+local today = dayKey()
 local usedToday = 0
 do
     local row = firstRow(DB:query("SELECT v FROM ceviri_meta WHERE k = ?", "chars_" .. today))
@@ -393,7 +397,7 @@ do
 end
 
 local function rollDay()
-    local now = os.date("%Y-%m-%d")
+    local now = dayKey()
     if now ~= today then
         today, usedToday = now, 0
     end
