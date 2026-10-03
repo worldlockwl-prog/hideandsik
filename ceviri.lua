@@ -10,8 +10,8 @@ local bypass = {
 }
 
 local CONFIG = {
+    SOURCE = "Autodetect",
     TARGET = "en",
-    DEFAULT_SOURCE = "tr",
 
     MYMEMORY_URL = "https://api.mymemory.translated.net/get",
     MYMEMORY_EMAIL = "",
@@ -80,69 +80,6 @@ if CONFIG.AUTO_ITEM_NAMES then
     end
 end
 print("[ceviri] bypass: " .. bypassCount .. " liste + " .. itemCount .. " item adi yuklendi")
-
-local LANG_HINTS = {
-    tr = { "ve", "bir", "bu", "ne", "naber", "nasilsin", "kanka", "knk", "abi", "mi", "mu", "var", "yok",
-        "ben", "sen", "biz", "siz", "evet", "hayir", "tamam", "olur", "lazim", "kac", "alirim", "satiyorum",
-        "aliyorum", "misin", "gel", "nerde", "neden", "niye", "degil", "cok", "iyi", "guzel", "sagol", "selam",
-        "slm", "merhaba", "olsun", "ama", "icin", "gibi", "daha", "simdi", "hadi", "bana", "sana", "beni" },
-    en = { "the", "you", "is", "are", "what", "how", "why", "where", "buy", "sell", "selling", "buying",
-        "hello", "hi", "hey", "please", "pls", "plz", "my", "me", "i", "im", "it", "this", "that", "and", "for",
-        "with", "have", "want", "need", "thanks", "thx", "yes", "can", "dont", "good", "nice", "friend",
-        "price", "much", "who", "your", "anyone", "sorry", "give", "come", "here" },
-    id = { "aku", "kamu", "yang", "tidak", "ga", "gak", "nggak", "apa", "mau", "beli", "jual", "bang",
-        "saya", "dong", "sih", "udah", "sudah", "belum", "bisa", "ada", "ini", "itu", "gimana", "berapa",
-        "kak", "terima", "kasih", "makasih", "halo", "iya", "jangan", "lagi", "banget", "dan", "juga" },
-    tl = { "ako", "ikaw", "ang", "ng", "mga", "po", "naman", "bili", "pabili", "salamat", "kuya", "lods",
-        "sige", "oo", "hindi", "ano", "bakit", "saan", "paano", "magkano", "ko", "mo", "sa", "lang",
-        "talaga", "pare", "tara", "wala", "meron", "kayo", "tayo" },
-}
-
-local HINT_WORDS = {}
-for lang, words in pairs(LANG_HINTS) do
-    for _, word in ipairs(words) do
-        HINT_WORDS[word] = lang
-    end
-end
-
-local TR_SUFFIXES = { "yorum", "yorsun", "yoruz", "yorlar", "misin", "musun", "miyim", "acak", "ecek", "icam", "ucam" }
-local TR_CHARS = { "ç", "ş", "ğ", "ı", "İ", "ö", "ü", "Ç", "Ş", "Ğ", "Ö", "Ü" }
-
-local function detectLang(text)
-    local scores = { tr = 0, en = 0, id = 0, tl = 0 }
-    for _, ch in ipairs(TR_CHARS) do
-        if text:find(ch, 1, true) then
-            scores.tr = scores.tr + 2
-            break
-        end
-    end
-    for word in text:lower():gmatch("%a+") do
-        local lang = HINT_WORDS[word]
-        if lang then
-            scores[lang] = scores[lang] + 1
-        else
-            for _, suffix in ipairs(TR_SUFFIXES) do
-                if #word > #suffix + 1 and word:sub(-#suffix) == suffix then
-                    scores.tr = scores.tr + 1
-                    break
-                end
-            end
-        end
-    end
-
-    local best, bestScore, secondScore = nil, 0, 0
-    for lang, score in pairs(scores) do
-        if score > bestScore then
-            best, secondScore, bestScore = lang, bestScore, score
-        elseif score > secondScore then
-            secondScore = score
-        end
-    end
-    if best and bestScore > secondScore then
-        return best
-    end
-    return nil
-end
 
 local function countLetters(s)
     local _, ascii = s:gsub("%a", "")
@@ -320,6 +257,9 @@ local function parseMyMemory(body, status, masked, kept)
         return nil
     end
     local code = tonumber(data.responseStatus)
+    if body:find("DISTINCT LANGUAGES", 1, true) then
+        return ""
+    end
     if code ~= 200 or data.quotaFinished == true then
         apiPausedUntil = os.time() + ((data.quotaFinished == true or code == 429) and 1800 or 10)
         logError("API hata: " .. body:sub(1, 150))
@@ -387,7 +327,7 @@ local function deliver(world, speakerNetID, speakerName, translated)
     local line = string.format(CONFIG.CONSOLE_FORMAT, speakerName, translated)
     for _, p in ipairs(world:getPlayers()) do
         if CONFIG.SHOW_BUBBLE then
-            p:onTalkBubble(speakerNetID, translated, false, 0)
+            p:onTalkBubble(speakerNetID, translated, 0, 0)
         end
         if CONFIG.SHOW_CONSOLE then
             p:onConsoleMessage(line, 0)
@@ -399,15 +339,12 @@ local function handleChat(world, player, message)
     local text = cleanInput(message)
     if text == "" or #text > CONFIG.MAX_MESSAGE_LEN then return end
 
-    local source = detectLang(text) or CONFIG.DEFAULT_SOURCE
-    if source == CONFIG.TARGET then return end
-
     local segments, needsApi = splitMessage(text)
     if not needsApi then return end
 
     local speakerNetID = player:getNetID()
     local speakerName = player:getCleanName()
-    local key = source .. "|" .. text:lower()
+    local key = text:lower()
 
     local cached = cache[key]
     if cached ~= nil then
@@ -431,7 +368,7 @@ local function handleChat(world, player, message)
 
     local masked, kept = buildMasked(segments)
     local url = CONFIG.MYMEMORY_URL .. "?q=" .. urlencode(masked) ..
-        "&langpair=" .. source .. "%7C" .. CONFIG.TARGET .. "&mt=1"
+        "&langpair=" .. CONFIG.SOURCE .. "%7C" .. CONFIG.TARGET .. "&mt=1"
     if CONFIG.MYMEMORY_EMAIL ~= "" then
         url = url .. "&de=" .. urlencode(CONFIG.MYMEMORY_EMAIL)
     end
