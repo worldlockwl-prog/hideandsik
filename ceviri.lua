@@ -14,6 +14,8 @@ local CONFIG = {
 
     MYMEMORY_URL = "https://api.mymemory.translated.net/get",
     MYMEMORY_EMAIL = "",
+    MYMEMORY_USE_MEMORY = false,
+    MYMEMORY_MIN_MATCH = 0.85,
 
     GOOGLE_API_KEY = "",
     GOOGLE_URL = "https://translation.googleapis.com/language/translate/v2",
@@ -21,9 +23,7 @@ local CONFIG = {
     DB_FILE = "ceviri.db",
 
     DEFAULT_ENABLED = true,
-    DEFAULT_LANG = "en",
-    TRUST_SPEAKER_LANG = true,
-    TEST_MODE = true,
+    DEFAULT_LANG = "ENG",
 
     ASCII_OUTPUT = true,
     AUTO_ITEM_NAMES = true,
@@ -39,31 +39,50 @@ local CONFIG = {
 
     SHOW_CONSOLE = true,
     SHOW_BUBBLE = true,
-    CONSOLE_FORMAT = "`s[%s] %s`s: `o%s",
+    CONSOLE_FORMAT = "`5%s: `w%s",
 }
 
 local LANGS = {
-    tr  = { name = "Turkce",    tag = "TR",  code = "tr", pair = "en" },
-    en  = { name = "English",   tag = "EN",  code = "en", pair = "tr" },
-    id  = { name = "Indonesia", tag = "ID",  code = "id", pair = "en" },
-    fil = { name = "Filipino",  tag = "FIL", code = "tl", pair = "en" },
+    TR   = { name = "Turkce",    code = "tr", alt = "tr" },
+    ENG  = { name = "Ingilizce", code = "en", alt = "en" },
+    INDO = { name = "Endonezce", code = "id", alt = "in" },
+    PH   = { name = "Filipince", code = "tl", alt = "fil" },
 }
-local LANG_ORDER = { "tr", "en", "id", "fil" }
+local LANG_ORDER = { "TR", "ENG", "INDO", "PH" }
 
-local COUNTRY_LANG = { tr = "tr", id = "id", ph = "fil" }
+local LANG_ALIAS = {
+    TR = "TR", TUR = "TR", TURKCE = "TR",
+    EN = "ENG", ENG = "ENG", ENGLISH = "ENG", INGILIZCE = "ENG",
+    ID = "INDO", INDO = "INDO", INDONESIA = "INDO", ENDONEZCE = "INDO",
+    PH = "PH", FIL = "PH", TL = "PH", FILIPINO = "PH", FILIPINCE = "PH",
+}
 
-local CODE_TO_LANG = { fil = "fil" }
+local COUNTRY_LANG = { tr = "TR", id = "INDO", ph = "PH" }
+
+local CODE_TO_LANG = {}
 for key, lang in pairs(LANGS) do
     CODE_TO_LANG[lang.code] = key
+    CODE_TO_LANG[lang.alt] = key
+end
+
+local function normalizeLang(value)
+    if type(value) == "table" then
+        value = value.lang or value.language or value[1]
+    end
+    if type(value) ~= "string" then
+        return nil
+    end
+    return LANG_ALIAS[value:upper()]
 end
 
 local sqlOpen = (sqlite and sqlite.open) or (db and db.open)
 local DB = sqlOpen(CONFIG.DB_FILE)
 
-DB:query("CREATE TABLE IF NOT EXISTS ceviri_cache (k TEXT PRIMARY KEY, v TEXT, src TEXT, ts INTEGER)")
-DB:query("CREATE TABLE IF NOT EXISTS ceviri_players (uid INTEGER PRIMARY KEY, lang TEXT, enabled INTEGER)")
+DB:query("DROP TABLE IF EXISTS ceviri_cache")
+DB:query("CREATE TABLE IF NOT EXISTS ceviri_cache2 (k TEXT PRIMARY KEY, v TEXT, ts INTEGER)")
+DB:query("CREATE TABLE IF NOT EXISTS ceviri_lang (nick TEXT PRIMARY KEY, lang TEXT, enabled INTEGER)")
 DB:query("CREATE TABLE IF NOT EXISTS ceviri_meta (k TEXT PRIMARY KEY, v TEXT)")
-DB:query("DELETE FROM ceviri_cache WHERE ts < ?", os.time() - CONFIG.CACHE_DAYS * 86400)
+DB:query("DELETE FROM ceviri_cache2 WHERE ts < ?", os.time() - CONFIG.CACHE_DAYS * 86400)
 
 local function firstRow(rows)
     if type(rows) == "table" and type(rows[1]) == "table" then
@@ -122,6 +141,69 @@ if CONFIG.AUTO_ITEM_NAMES then
     end
 end
 print("[ceviri] bypass: " .. bypassCount .. " liste + " .. itemCount .. " item adi yuklendi")
+
+local LANG_HINTS = {
+    TR = { "ve", "bir", "bu", "ne", "naber", "nasilsin", "kanka", "knk", "abi", "mi", "mu", "var", "yok",
+        "ben", "sen", "biz", "siz", "evet", "hayir", "tamam", "olur", "lazim", "kac", "alirim", "satiyorum",
+        "aliyorum", "misin", "gel", "nerde", "neden", "niye", "degil", "cok", "iyi", "guzel", "sagol", "selam",
+        "slm", "merhaba", "olsun", "ama", "icin", "gibi", "daha", "simdi", "hadi", "bana", "sana", "beni" },
+    ENG = { "the", "you", "is", "are", "what", "how", "why", "where", "buy", "sell", "selling", "buying",
+        "hello", "hi", "hey", "please", "pls", "plz", "my", "me", "i", "im", "it", "this", "that", "and", "for",
+        "with", "have", "want", "need", "thanks", "thx", "yes", "can", "dont", "good", "nice", "friend",
+        "price", "much", "who", "your", "anyone", "sorry", "give", "come", "here" },
+    INDO = { "aku", "kamu", "yang", "tidak", "ga", "gak", "nggak", "apa", "mau", "beli", "jual", "bang",
+        "saya", "dong", "sih", "udah", "sudah", "belum", "bisa", "ada", "ini", "itu", "gimana", "berapa",
+        "kak", "terima", "kasih", "makasih", "halo", "iya", "jangan", "lagi", "banget", "dan", "juga" },
+    PH = { "ako", "ikaw", "ang", "ng", "mga", "po", "naman", "bili", "pabili", "salamat", "kuya", "lods",
+        "sige", "oo", "hindi", "ano", "bakit", "saan", "paano", "magkano", "ko", "mo", "sa", "lang",
+        "talaga", "pare", "tara", "wala", "meron", "kayo", "tayo" },
+}
+
+local HINT_WORDS = {}
+for lang, words in pairs(LANG_HINTS) do
+    for _, word in ipairs(words) do
+        HINT_WORDS[word] = lang
+    end
+end
+
+local TR_SUFFIXES = { "yorum", "yorsun", "yoruz", "yorlar", "misin", "musun", "miyim", "acak", "ecek", "icam", "ucam" }
+local TR_CHARS = { "ç", "ş", "ğ", "ı", "İ", "ö", "ü", "Ç", "Ş", "Ğ", "Ö", "Ü" }
+
+local function detectLang(text, fallback)
+    local scores = { TR = 0, ENG = 0, INDO = 0, PH = 0 }
+    for _, ch in ipairs(TR_CHARS) do
+        if text:find(ch, 1, true) then
+            scores.TR = scores.TR + 2
+            break
+        end
+    end
+    for word in text:lower():gmatch("%a+") do
+        local lang = HINT_WORDS[word]
+        if lang then
+            scores[lang] = scores[lang] + 1
+        else
+            for _, suffix in ipairs(TR_SUFFIXES) do
+                if #word > #suffix + 1 and word:sub(-#suffix) == suffix then
+                    scores.TR = scores.TR + 1
+                    break
+                end
+            end
+        end
+    end
+
+    local best, bestScore, secondScore = nil, 0, 0
+    for lang, score in pairs(scores) do
+        if score > bestScore then
+            best, secondScore, bestScore = lang, bestScore, score
+        elseif score > secondScore then
+            secondScore = score
+        end
+    end
+    if best and bestScore > secondScore then
+        return best
+    end
+    return fallback
+end
 
 local function countLetters(s)
     local _, ascii = s:gsub("%a", "")
@@ -344,10 +426,35 @@ local function googleTranslate(segments, target)
     return htmlDecode(t.translatedText), CODE_TO_LANG[t.detectedSourceLanguage or ""]
 end
 
+local function targetMatches(value, target)
+    if type(value) ~= "string" then
+        return true
+    end
+    local prefix = value:lower():match("^(%a+)")
+    return prefix == LANGS[target].code or prefix == LANGS[target].alt
+end
+
+local function pickMyMemory(data, target)
+    if type(data.matches) == "table" then
+        for _, m in ipairs(data.matches) do
+            if type(m) == "table" and m["created-by"] == "MT!" and type(m.translation) == "string"
+                and targetMatches(m.target, target) then
+                return m.translation
+            end
+        end
+    end
+    local rd = data.responseData
+    if CONFIG.MYMEMORY_USE_MEMORY and type(rd) == "table" and type(rd.translatedText) == "string"
+        and (tonumber(rd.match) or 0) >= CONFIG.MYMEMORY_MIN_MATCH then
+        return rd.translatedText
+    end
+    return nil
+end
+
 local function myMemoryTranslate(segments, source, target)
     local masked, kept = buildMasked(segments)
     local url = CONFIG.MYMEMORY_URL .. "?q=" .. urlencode(masked) ..
-        "&langpair=" .. LANGS[source].code .. "%7C" .. LANGS[target].code
+        "&langpair=" .. LANGS[source].code .. "%7C" .. LANGS[target].code .. "&mt=1"
     if CONFIG.MYMEMORY_EMAIL ~= "" then
         url = url .. "&de=" .. urlencode(CONFIG.MYMEMORY_EMAIL)
     end
@@ -361,10 +468,8 @@ local function myMemoryTranslate(segments, source, target)
     end
 
     local data = json.decode(body)
-    local rd = type(data) == "table" and data.responseData
-    local txt = type(rd) == "table" and rd.translatedText
     local code = type(data) == "table" and tonumber(data.responseStatus)
-    if type(txt) ~= "string" or code ~= 200 or data.quotaFinished == true then
+    if type(data) ~= "table" or code ~= 200 or data.quotaFinished == true then
         if type(data) == "table" and (data.quotaFinished == true or code == 429) then
             pauseApi(1800)
         else
@@ -372,6 +477,12 @@ local function myMemoryTranslate(segments, source, target)
         end
         logApiError("mymemory: " .. body:sub(1, 200))
         return nil
+    end
+
+    local txt = pickMyMemory(data, target)
+    if not txt then
+        print("[ceviri] uygun ceviri yok: " .. masked)
+        return ""
     end
 
     local restored = restoreMasked(htmlDecode(txt), kept)
@@ -420,16 +531,16 @@ local function memPut(key, value)
 end
 
 local function translate(text, segments, source, target, cb)
-    if CONFIG.PROVIDER ~= "google" and source == target then
+    if source == target then
         cb("")
         return
     end
 
-    local key = (CONFIG.PROVIDER == "google" and "auto" or source) .. ">" .. target .. "|" .. text:lower()
+    local key = source .. ">" .. target .. "|" .. text:lower()
 
     local cached = memCache[key]
     if cached == nil then
-        local row = firstRow(DB:query("SELECT v FROM ceviri_cache WHERE k = ?", key))
+        local row = firstRow(DB:query("SELECT v FROM ceviri_cache2 WHERE k = ?", key))
         if row and type(row.v) == "string" then
             cached = row.v
             memPut(key, cached)
@@ -475,8 +586,7 @@ local function translate(text, segments, source, target, cb)
                 result = ""
             end
             memPut(key, result)
-            DB:query("INSERT OR REPLACE INTO ceviri_cache (k, v, src, ts) VALUES (?, ?, ?, ?)",
-                key, result, tostring(detected or source), os.time())
+            DB:query("INSERT OR REPLACE INTO ceviri_cache2 (k, v, ts) VALUES (?, ?, ?)", key, result, os.time())
         end
 
         local callbacks = inflight[key] and inflight[key].callbacks or {}
@@ -487,40 +597,64 @@ local function translate(text, segments, source, target, cb)
     end)()
 end
 
-local settings = {}
+local externalLang = type(playerLang) == "table" and type(playerLang.get) == "function" and playerLang or nil
 
-local function getSettings(player)
-    local uid = player:getUserID()
-    local s = settings[uid]
-    if s then return s end
+local langCache = {}
+local localLang = {}
 
-    local row = firstRow(DB:query("SELECT lang, enabled FROM ceviri_players WHERE uid = ?", uid))
-    if row then
-        s = { lang = row.lang, enabled = tonumber(row.enabled) == 1 }
-    else
-        local country = player:getCountry()
-        country = type(country) == "string" and country:lower() or ""
-        s = { lang = COUNTRY_LANG[country] or CONFIG.DEFAULT_LANG, enabled = CONFIG.DEFAULT_ENABLED }
+function localLang.get(nick)
+    local entry = langCache[nick]
+    if entry == nil then
+        local row = firstRow(DB:query("SELECT lang, enabled FROM ceviri_lang WHERE nick = ?", nick))
+        if row then
+            entry = { lang = normalizeLang(row.lang), enabled = tonumber(row.enabled) ~= 0 }
+        else
+            entry = false
+        end
+        langCache[nick] = entry
     end
-    if not LANGS[s.lang] then
-        s.lang = CONFIG.DEFAULT_LANG
-    end
-    settings[uid] = s
-    return s
+    return entry or nil
 end
 
-local function saveSettings(player, s)
-    settings[player:getUserID()] = s
-    DB:query("INSERT OR REPLACE INTO ceviri_players (uid, lang, enabled) VALUES (?, ?, ?)",
-        player:getUserID(), s.lang, s.enabled and 1 or 0)
+function localLang.set(nick, lang, enabled)
+    langCache[nick] = { lang = lang, enabled = enabled }
+    DB:query("INSERT OR REPLACE INTO ceviri_lang (nick, lang, enabled) VALUES (?, ?, ?)",
+        nick, lang, enabled and 1 or 0)
+end
+
+local function nickOf(player)
+    return player:getRealCleanName():lower()
+end
+
+local function getPlayerLang(player)
+    local saved = localLang.get(nickOf(player))
+    local lang = saved and saved.lang
+    if not lang and externalLang then
+        lang = normalizeLang(externalLang.get(player:getRealCleanName()))
+    end
+    if not lang then
+        local country = player:getCountry()
+        country = type(country) == "string" and country:lower() or ""
+        lang = COUNTRY_LANG[country] or CONFIG.DEFAULT_LANG
+    end
+
+    local enabled = CONFIG.DEFAULT_ENABLED
+    if saved then
+        enabled = saved.enabled
+    end
+    return lang, enabled
+end
+
+local function setPlayerLang(player, lang, enabled)
+    localLang.set(nickOf(player), lang, enabled)
 end
 
 onPlayerDisconnectCallback(function(player)
-    settings[player:getUserID()] = nil
+    langCache[nickOf(player)] = nil
     return false
 end)
 
-local function deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName, original, translated, lang, receivers)
+local function deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName, translated, receivers)
     local speakerHere = false
     local targets = {}
     for _, p in ipairs(getServerPlayers()) do
@@ -536,11 +670,11 @@ local function deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName
     end
 
     for _, p in ipairs(targets) do
-        if CONFIG.SHOW_CONSOLE then
-            p:onConsoleMessage(string.format(CONFIG.CONSOLE_FORMAT, LANGS[lang].tag, speakerName, translated))
-        end
         if CONFIG.SHOW_BUBBLE and speakerHere then
-            p:onTalkBubble(speakerNetID, original .. " `s(" .. translated .. ")", 0)
+            p:onTalkBubble(speakerNetID, translated, false, 0)
+        end
+        if CONFIG.SHOW_CONSOLE then
+            p:onConsoleMessage(string.format(CONFIG.CONSOLE_FORMAT, speakerName, translated), 0)
         end
     end
 end
@@ -549,26 +683,16 @@ local function handleWorldChat(world, player, message)
     local text = cleanInput(message)
     if text == "" or #text > CONFIG.MAX_MESSAGE_LEN then return end
 
-    local speakerUID = player:getUserID()
-    local speakerLang = getSettings(player).lang
+    local speakerLang = getPlayerLang(player)
+    local source = detectLang(text, speakerLang)
 
     local groups = {}
     local hasTarget = false
     for _, p in ipairs(world:getPlayers()) do
-        if p:getType() == 0 and p:getUserID() ~= speakerUID then
-            local s = getSettings(p)
-            if s.enabled and not (CONFIG.TRUST_SPEAKER_LANG and s.lang == speakerLang) then
-                groups[s.lang] = groups[s.lang] or {}
-                groups[s.lang][p:getUserID()] = true
-                hasTarget = true
-            end
-        end
-    end
-    if CONFIG.TEST_MODE then
-        local pair = LANGS[speakerLang].pair
-        if LANGS[pair] then
-            groups[pair] = groups[pair] or {}
-            groups[pair][speakerUID] = true
+        local lang, enabled = getPlayerLang(p)
+        if enabled and lang ~= source then
+            groups[lang] = groups[lang] or {}
+            groups[lang][p:getUserID()] = true
             hasTarget = true
         end
     end
@@ -578,14 +702,15 @@ local function handleWorldChat(world, player, message)
     if not needsApi then return end
 
     local worldName = world:getName()
+    local speakerUID = player:getUserID()
     local speakerNetID = player:getNetID()
-    local speakerName = player:getName()
+    local speakerName = player:getCleanName()
 
     for lang, receivers in pairs(groups) do
-        translate(text, segments, speakerLang, lang, function(translated)
+        translate(text, segments, source, lang, function(translated)
             if not translated or translated == "" then return end
             timer.setTimeout(CONFIG.DELIVER_DELAY, function()
-                deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName, text, translated, lang, receivers)
+                deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName, translated, receivers)
             end)
         end)
     end
@@ -601,25 +726,23 @@ end)
 registerLuaCommand({
     command = "ceviri",
     roleRequired = 0,
-    description = "Ceviri modunu ac/kapat ve dilini sec."
+    description = "Ceviri dilini sec (TR, ENG, INDO, PH) veya ceviriyi ac/kapat."
 })
 
 local function showMenu(player)
-    local s = getSettings(player)
-    local country = player:getCountry()
+    local lang, enabled = getPlayerLang(player)
     local d = "set_default_color|`o\n" ..
         "add_label_with_icon|big|`wCeviri Modu``|left|18|\n" ..
         "add_spacer|small|\n" ..
-        "add_textbox|Durum: " .. (s.enabled and "`2ACIK" or "`4KAPALI") .. "|left|\n" ..
-        "add_textbox|`oDilin: `w" .. LANGS[s.lang].name .. "|left|\n" ..
-        "add_smalltext|`oUlke: " .. tostring(country) .. "|\n" ..
-        "add_smalltext|`oBaska dilde yazilan mesajlarin cevirisi altinda gri renkte gosterilir.|\n" ..
+        "add_textbox|Durum: " .. (enabled and "`2ACIK" or "`4KAPALI") .. "|left|\n" ..
+        "add_textbox|`oDilin: `w" .. LANGS[lang].name .. "|left|\n" ..
+        "add_smalltext|`oBaska dilde yazilan mesajlar sana sectigin dilde gosterilir.|\n" ..
         "add_spacer|small|\n" ..
-        "add_button|ceviri_toggle|" .. (s.enabled and "`4Ceviriyi Kapat" or "`2Ceviriyi Ac") .. "|noflags|0|0|\n" ..
+        "add_button|ceviri_toggle|" .. (enabled and "`4Ceviriyi Kapat" or "`2Ceviriyi Ac") .. "|noflags|0|0|\n" ..
         "add_spacer|small|\n" ..
         "add_textbox|`oDilini sec:|left|\n"
     for _, key in ipairs(LANG_ORDER) do
-        local label = (key == s.lang and "`2> " or "`w") .. LANGS[key].name
+        local label = (key == lang and "`2> " or "`w") .. LANGS[key].name
         d = d .. "add_button|ceviri_lang_" .. key .. "|" .. label .. "|noflags|0|0|\n"
     end
     d = d .. "add_quick_exit|\n" ..
@@ -632,19 +755,17 @@ onPlayerCommandCallback(function(world, player, fullCommand)
     if not cmd or cmd:lower() ~= "ceviri" then return false end
 
     arg = (arg or ""):lower()
-    local s = getSettings(player)
-    if LANGS[arg] then
-        s.lang = arg
-        saveSettings(player, s)
-        player:onConsoleMessage("`2[Ceviri] `oDilin `w" .. LANGS[arg].name .. " `oolarak ayarlandi.")
+    local lang, enabled = getPlayerLang(player)
+    local newLang = normalizeLang(arg)
+    if newLang then
+        setPlayerLang(player, newLang, enabled)
+        player:onConsoleMessage("`2[Ceviri] `oDilin `w" .. LANGS[newLang].name .. " `oolarak ayarlandi.", 0)
     elseif arg == "ac" or arg == "on" then
-        s.enabled = true
-        saveSettings(player, s)
-        player:onConsoleMessage("`2[Ceviri] `oCeviri modu acildi.")
+        setPlayerLang(player, lang, true)
+        player:onConsoleMessage("`2[Ceviri] `oCeviri modu acildi.", 0)
     elseif arg == "kapat" or arg == "off" then
-        s.enabled = false
-        saveSettings(player, s)
-        player:onConsoleMessage("`2[Ceviri] `oCeviri modu kapatildi.")
+        setPlayerLang(player, lang, false)
+        player:onConsoleMessage("`2[Ceviri] `oCeviri modu kapatildi.", 0)
     else
         showMenu(player)
     end
@@ -655,16 +776,14 @@ onPlayerDialogCallback(function(world, player, data)
     if data["dialog_name"] ~= "ceviri_menu" then return false end
 
     local btn = data["buttonClicked"] or ""
-    local s = getSettings(player)
+    local lang, enabled = getPlayerLang(player)
     if btn == "ceviri_toggle" then
-        s.enabled = not s.enabled
-        saveSettings(player, s)
+        setPlayerLang(player, lang, not enabled)
         showMenu(player)
     else
-        local lang = btn:match("^ceviri_lang_(%w+)$")
-        if lang and LANGS[lang] then
-            s.lang = lang
-            saveSettings(player, s)
+        local newLang = btn:match("^ceviri_lang_(%w+)$")
+        if newLang and LANGS[newLang] then
+            setPlayerLang(player, newLang, enabled)
             showMenu(player)
         end
     end
