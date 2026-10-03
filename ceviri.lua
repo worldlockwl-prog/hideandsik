@@ -1,5 +1,14 @@
 print("(Loaded) ceviri script for GTPS Cloud")
 
+local bypass = {
+    ['WL'] = true,
+    ['DL'] = true,
+    ['BGL'] = true,
+    ['gg'] = true,
+    ['ez'] = true,
+    ['wp'] = true,
+}
+
 local CONFIG = {
     PROVIDER = "mymemory",
 
@@ -89,7 +98,7 @@ local function addPhrase(text)
 end
 
 local bypassCount, itemCount = 0, 0
-for key in pairs(require("ceviri_bypass")) do
+for key in pairs(bypass) do
     addPhrase(key)
     bypassCount = bypassCount + 1
 end
