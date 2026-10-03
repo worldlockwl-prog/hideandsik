@@ -1,38 +1,32 @@
--- ceviri (translation mode) script
 print("(Loaded) ceviri script for GTPS Cloud")
 
---------------------------------------------------------------------------------
--- AYARLAR
---------------------------------------------------------------------------------
 local CONFIG = {
-    -- Google Cloud Translation API anahtari (console.cloud.google.com -> "Cloud Translation API")
     GOOGLE_API_KEY = "BURAYA_API_KEY",
     API_URL = "https://translation.googleapis.com/language/translate/v2",
 
     DB_FILE = "ceviri.db",
 
-    DEFAULT_ENABLED = true,     -- yeni oyuncularda ceviri modu acik mi
-    DEFAULT_LANG = "en",        -- ulkesi COUNTRY_LANG'da yoksa verilecek dil
-    TRUST_SPEAKER_LANG = true,  -- konusanla ayni dildeki oyunculara API cagrisi yapma
+    DEFAULT_ENABLED = true,
+    DEFAULT_LANG = "en",
+    TRUST_SPEAKER_LANG = true,
 
-    ASCII_OUTPUT = true,        -- ceviriyi ASCII'ye cevir (s/c/g/i/o/u), oyun Turkce harf gostermiyorsa
-    AUTO_ITEM_NAMES = true,     -- item adlarini otomatik bypass'a ekle
-    AUTO_ITEM_MIN_WORDS = 2,    -- sadece bu kadar ve daha fazla kelimeli item adlari ("Rock" gibi tek kelimeler haric)
+    ASCII_OUTPUT = true,
+    AUTO_ITEM_NAMES = true,
+    AUTO_ITEM_MIN_WORDS = 2,
 
-    MIN_LETTERS = 2,            -- bypass disinda en az bu kadar harf yoksa API'ye gitme
+    MIN_LETTERS = 2,
     MAX_MESSAGE_LEN = 200,
-    DAILY_CHAR_LIMIT = 16000,   -- gunluk API karakter limiti (~500k/ay = Google ucretsiz kota)
+    DAILY_CHAR_LIMIT = 16000,
 
-    DELIVER_DELAY = 0.1,        -- cevirinin orijinal mesajdan sonra gelmesi icin bekleme (sn)
+    DELIVER_DELAY = 0.1,
     CACHE_DAYS = 30,
     MEMORY_CACHE_MAX = 3000,
 
     SHOW_CONSOLE = true,
     SHOW_BUBBLE = true,
-    CONSOLE_FORMAT = "`s[%s] %s`s: `o%s",  -- etiket, konusan adi, ceviri
+    CONSOLE_FORMAT = "`s[%s] %s`s: `o%s",
 }
 
--- Yeni dil eklemek icin buraya bir satir ve LANG_ORDER'a anahtarini ekle.
 local LANGS = {
     tr  = { name = "Turkce",    tag = "TR",  google = "tr" },
     en  = { name = "English",   tag = "EN",  google = "en" },
@@ -41,7 +35,6 @@ local LANGS = {
 }
 local LANG_ORDER = { "tr", "en", "id", "fil" }
 
--- Player:getCountry() -> dil
 local COUNTRY_LANG = { tr = "tr", id = "id", ph = "fil" }
 
 local GOOGLE_TO_LANG = { fil = "fil" }
@@ -49,9 +42,6 @@ for key, lang in pairs(LANGS) do
     GOOGLE_TO_LANG[lang.google] = key
 end
 
---------------------------------------------------------------------------------
--- VERITABANI
---------------------------------------------------------------------------------
 local sqlOpen = (sqlite and sqlite.open) or (db and db.open)
 local DB = sqlOpen(CONFIG.DB_FILE)
 
@@ -67,13 +57,9 @@ local function firstRow(rows)
     return nil
 end
 
---------------------------------------------------------------------------------
--- BYPASS (cevrilmeyecek ifadeler)
---------------------------------------------------------------------------------
-local phrases = {}   -- "legendary wings" -> true
-local maxWords = {}  -- ilk kelime -> o kelimeyle baslayan en uzun ifadenin kelime sayisi
+local phrases = {}
+local maxWords = {}
 
--- Kelimenin basindaki/sonundaki noktalamayi atar: "wl?" -> "wl", "(dl)" -> "dl"
 local function wordCore(token)
     local core = token:match("^%p*(.-)%p*$")
     if core == nil or core == "" then
@@ -132,8 +118,6 @@ local function countLetters(s)
     return ascii + multi
 end
 
--- Mesaji HTML'e cevirir, bypass ifadelerini <span translate="no"> icine alir.
--- Donus: html, apiGerekliMi
 local function protectMessage(text)
     local tokens = {}
     for startPos, token, endPos in text:gmatch("()(%S+)()") do
@@ -170,7 +154,6 @@ local function protectMessage(text)
                 n = n - 1
             end
         end
-        -- "5wl", "100dl" gibi sayi + bypass
         if matchLen == 0 then
             local suffix = first:match("^%d+(%a[%w]*)$")
             if suffix and phrases[suffix] then
@@ -198,9 +181,6 @@ local function protectMessage(text)
     return table.concat(out), countLetters(table.concat(plain)) >= CONFIG.MIN_LETTERS
 end
 
---------------------------------------------------------------------------------
--- METIN YARDIMCILARI
---------------------------------------------------------------------------------
 local function utf8Char(cp)
     if not cp or cp < 0 then return "" end
     if cp < 128 then return string.char(cp) end
@@ -239,13 +219,11 @@ local ASCII_FOLD = {
     ["‘"] = "'", ["’"] = "'", ["“"] = '"', ["”"] = '"', ["…"] = "...", ["–"] = "-", ["—"] = "-",
 }
 
--- Oyuncunun mesajini temizler: renk kodlari, fazla bosluklar
 local function cleanInput(s)
     s = s:gsub("`.", ""):gsub("[\r\n\t]", " "):gsub("%s+", " ")
     return s:match("^%s*(.-)%s*$")
 end
 
--- API'den gelen metni oyunda guvenle gosterilecek hale getirir
 local function cleanOutput(s)
     if CONFIG.ASCII_OUTPUT then
         s = s:gsub("[\192-\247][\128-\191]*", function(ch) return ASCII_FOLD[ch] or "" end)
@@ -258,9 +236,6 @@ local function sameText(a, b)
     return a:lower():gsub("[%p%s]", "") == b:lower():gsub("[%p%s]", "")
 end
 
---------------------------------------------------------------------------------
--- GOOGLE TRANSLATE
---------------------------------------------------------------------------------
 local apiPausedUntil = 0
 local lastErrorLog = 0
 
@@ -276,7 +251,6 @@ if not apiKeySet then
     print("[ceviri] UYARI: GOOGLE_API_KEY ayarlanmamis, ceviri calismayacak")
 end
 
--- Coroutine icinden cagrilmali. Donus: ceviri (html), kaynakDil  |  nil
 local function googleTranslate(html, targetLang)
     local body = json.encode({ q = html, target = LANGS[targetLang].google, format = "html" })
     local res, status = http.post(CONFIG.API_URL .. "?key=" .. CONFIG.GOOGLE_API_KEY,
@@ -305,9 +279,6 @@ local function googleTranslate(html, targetLang)
     return t.translatedText, t.detectedSourceLanguage
 end
 
---------------------------------------------------------------------------------
--- CEVIRI (onbellek + ayni anda gelen ayni istekleri birlestirme)
---------------------------------------------------------------------------------
 local memCache, memCount = {}, 0
 local inflight = {}
 
@@ -341,7 +312,6 @@ local function memPut(key, value)
     memCache[key] = value
 end
 
--- cb(ceviri) : ceviri nil ise hata, "" ise cevirmeye gerek yok (zaten o dilde)
 local function translate(text, html, targetLang, cb)
     local key = targetLang .. "|" .. text:lower()
 
@@ -358,7 +328,6 @@ local function translate(text, html, targetLang, cb)
         return
     end
 
-    -- ayni metin zaten cevriliyorsa sonucu bekle (15 sn'den eskiyse takilmis sayilir)
     local pending = inflight[key]
     if pending and os.time() - pending.started < 15 then
         table.insert(pending.callbacks, cb)
@@ -400,9 +369,6 @@ local function translate(text, html, targetLang, cb)
     end)()
 end
 
---------------------------------------------------------------------------------
--- OYUNCU AYARLARI
---------------------------------------------------------------------------------
 local settings = {}
 
 local function getSettings(player)
@@ -436,10 +402,6 @@ onPlayerDisconnectCallback(function(player)
     return false
 end)
 
---------------------------------------------------------------------------------
--- DUNYA SOHBETI
---------------------------------------------------------------------------------
--- Cevap geldiginde oyuncu objelerini yeniden buluyoruz, cikmis/dunya degistirmis oyuncuya gondermiyoruz.
 local function deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName, original, translated, lang, receivers)
     local speakerHere = false
     local targets = {}
@@ -509,9 +471,6 @@ onPlayerChatCallback(function(world, player, message)
     return false
 end)
 
---------------------------------------------------------------------------------
--- /ceviri KOMUTU VE MENU
---------------------------------------------------------------------------------
 registerLuaCommand({
     command = "ceviri",
     roleRequired = 0,
