@@ -1,14 +1,20 @@
 print("(Loaded) ceviri script for GTPS Cloud")
 
 local CONFIG = {
-    GOOGLE_API_KEY = "BURAYA_API_KEY",
-    API_URL = "https://translation.googleapis.com/language/translate/v2",
+    PROVIDER = "mymemory",
+
+    MYMEMORY_URL = "https://api.mymemory.translated.net/get",
+    MYMEMORY_EMAIL = "",
+
+    GOOGLE_API_KEY = "",
+    GOOGLE_URL = "https://translation.googleapis.com/language/translate/v2",
 
     DB_FILE = "ceviri.db",
 
     DEFAULT_ENABLED = true,
     DEFAULT_LANG = "en",
     TRUST_SPEAKER_LANG = true,
+    TEST_MODE = true,
 
     ASCII_OUTPUT = true,
     AUTO_ITEM_NAMES = true,
@@ -16,7 +22,7 @@ local CONFIG = {
 
     MIN_LETTERS = 2,
     MAX_MESSAGE_LEN = 200,
-    DAILY_CHAR_LIMIT = 16000,
+    DAILY_CHAR_LIMIT = 4500,
 
     DELIVER_DELAY = 0.1,
     CACHE_DAYS = 30,
@@ -28,18 +34,18 @@ local CONFIG = {
 }
 
 local LANGS = {
-    tr  = { name = "Turkce",    tag = "TR",  google = "tr" },
-    en  = { name = "English",   tag = "EN",  google = "en" },
-    id  = { name = "Indonesia", tag = "ID",  google = "id" },
-    fil = { name = "Filipino",  tag = "FIL", google = "tl" },
+    tr  = { name = "Turkce",    tag = "TR",  code = "tr", pair = "en" },
+    en  = { name = "English",   tag = "EN",  code = "en", pair = "tr" },
+    id  = { name = "Indonesia", tag = "ID",  code = "id", pair = "en" },
+    fil = { name = "Filipino",  tag = "FIL", code = "tl", pair = "en" },
 }
 local LANG_ORDER = { "tr", "en", "id", "fil" }
 
 local COUNTRY_LANG = { tr = "tr", id = "id", ph = "fil" }
 
-local GOOGLE_TO_LANG = { fil = "fil" }
+local CODE_TO_LANG = { fil = "fil" }
 for key, lang in pairs(LANGS) do
-    GOOGLE_TO_LANG[lang.google] = key
+    CODE_TO_LANG[lang.code] = key
 end
 
 local sqlOpen = (sqlite and sqlite.open) or (db and db.open)
@@ -108,17 +114,13 @@ if CONFIG.AUTO_ITEM_NAMES then
 end
 print("[ceviri] bypass: " .. bypassCount .. " liste + " .. itemCount .. " item adi yuklendi")
 
-local function htmlEscape(s)
-    return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
-end
-
 local function countLetters(s)
     local _, ascii = s:gsub("%a", "")
     local _, multi = s:gsub("[\192-\247]", "")
     return ascii + multi
 end
 
-local function protectMessage(text)
+local function splitMessage(text)
     local tokens = {}
     for startPos, token, endPos in text:gmatch("()(%S+)()") do
         local lead = #token:match("^%p*")
@@ -133,7 +135,7 @@ local function protectMessage(text)
         }
     end
 
-    local out, plain = {}, {}
+    local segments = {}
     local cursor = 1
     local i = 1
     while i <= #tokens do
@@ -164,21 +166,71 @@ local function protectMessage(text)
         if matchLen > 0 then
             local spanStart = tokens[i].coreStart
             local spanEnd = tokens[i + matchLen - 1].coreEnd
-            local before = text:sub(cursor, spanStart - 1)
-            out[#out + 1] = htmlEscape(before)
-            plain[#plain + 1] = before
-            out[#out + 1] = '<span translate="no">' .. htmlEscape(text:sub(spanStart, spanEnd)) .. "</span>"
+            if spanStart > cursor then
+                segments[#segments + 1] = { text = text:sub(cursor, spanStart - 1) }
+            end
+            segments[#segments + 1] = { text = text:sub(spanStart, spanEnd), keep = true }
             cursor = spanEnd + 1
             i = i + matchLen
         else
             i = i + 1
         end
     end
-    local rest = text:sub(cursor)
-    out[#out + 1] = htmlEscape(rest)
-    plain[#plain + 1] = rest
+    if cursor <= #text then
+        segments[#segments + 1] = { text = text:sub(cursor) }
+    end
 
-    return table.concat(out), countLetters(table.concat(plain)) >= CONFIG.MIN_LETTERS
+    local letters = 0
+    for _, seg in ipairs(segments) do
+        if not seg.keep then
+            letters = letters + countLetters(seg.text)
+        end
+    end
+    return segments, letters >= CONFIG.MIN_LETTERS
+end
+
+local function htmlEscape(s)
+    return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
+local function buildHtml(segments)
+    local out = {}
+    for _, seg in ipairs(segments) do
+        if seg.keep then
+            out[#out + 1] = '<span translate="no">' .. htmlEscape(seg.text) .. "</span>"
+        else
+            out[#out + 1] = htmlEscape(seg.text)
+        end
+    end
+    return table.concat(out)
+end
+
+local function buildMasked(segments)
+    local out, kept = {}, {}
+    for _, seg in ipairs(segments) do
+        if seg.keep then
+            kept[#kept + 1] = seg.text
+            out[#out + 1] = "[" .. #kept .. "]"
+        else
+            out[#out + 1] = seg.text
+        end
+    end
+    return table.concat(out), kept
+end
+
+local function restoreMasked(s, kept)
+    for n, original in ipairs(kept) do
+        local count
+        s, count = s:gsub("%[%s*" .. n .. "%s*%]", (original:gsub("%%", "%%%%")), 1)
+        if count == 0 then
+            return nil
+        end
+    end
+    return s
+end
+
+local function urlencode(s)
+    return (s:gsub("[^%w%-_%.~]", function(c) return string.format("%%%02X", string.byte(c)) end))
 end
 
 local function utf8Char(cp)
@@ -239,6 +291,10 @@ end
 local apiPausedUntil = 0
 local lastErrorLog = 0
 
+local function pauseApi(seconds)
+    apiPausedUntil = os.time() + seconds
+end
+
 local function logApiError(msg)
     if os.time() - lastErrorLog >= 60 then
         lastErrorLog = os.time()
@@ -246,26 +302,26 @@ local function logApiError(msg)
     end
 end
 
-local apiKeySet = CONFIG.GOOGLE_API_KEY ~= "" and CONFIG.GOOGLE_API_KEY ~= "BURAYA_API_KEY"
-if not apiKeySet then
+local apiReady = CONFIG.PROVIDER ~= "google" or CONFIG.GOOGLE_API_KEY ~= ""
+if not apiReady then
     print("[ceviri] UYARI: GOOGLE_API_KEY ayarlanmamis, ceviri calismayacak")
 end
 
-local function googleTranslate(html, targetLang)
-    local body = json.encode({ q = html, target = LANGS[targetLang].google, format = "html" })
-    local res, status = http.post(CONFIG.API_URL .. "?key=" .. CONFIG.GOOGLE_API_KEY,
+local function googleTranslate(segments, target)
+    local body = json.encode({ q = buildHtml(segments), target = LANGS[target].code, format = "html" })
+    local res, status = http.post(CONFIG.GOOGLE_URL .. "?key=" .. CONFIG.GOOGLE_API_KEY,
         { ["Content-Type"] = "application/json; charset=utf-8" }, body)
     status = tonumber(status)
 
     if status ~= 200 or type(res) ~= "string" then
         if status == 429 then
-            apiPausedUntil = os.time() + 60
+            pauseApi(60)
         elseif status == 400 or status == 401 or status == 403 then
-            apiPausedUntil = os.time() + 300
+            pauseApi(300)
         else
-            apiPausedUntil = os.time() + 10
+            pauseApi(10)
         end
-        logApiError("status=" .. tostring(status) .. " " .. tostring(res):sub(1, 200))
+        logApiError("google status=" .. tostring(status) .. " " .. tostring(res):sub(1, 200))
         return nil
     end
 
@@ -273,10 +329,48 @@ local function googleTranslate(html, targetLang)
     local t = type(data) == "table" and type(data.data) == "table"
         and type(data.data.translations) == "table" and data.data.translations[1]
     if type(t) ~= "table" or type(t.translatedText) ~= "string" then
-        logApiError("beklenmeyen cevap: " .. res:sub(1, 200))
+        logApiError("google beklenmeyen cevap: " .. res:sub(1, 200))
         return nil
     end
-    return t.translatedText, t.detectedSourceLanguage
+    return htmlDecode(t.translatedText), CODE_TO_LANG[t.detectedSourceLanguage or ""]
+end
+
+local function myMemoryTranslate(segments, source, target)
+    local masked, kept = buildMasked(segments)
+    local url = CONFIG.MYMEMORY_URL .. "?q=" .. urlencode(masked) ..
+        "&langpair=" .. LANGS[source].code .. "%7C" .. LANGS[target].code
+    if CONFIG.MYMEMORY_EMAIL ~= "" then
+        url = url .. "&de=" .. urlencode(CONFIG.MYMEMORY_EMAIL)
+    end
+
+    local body, status = http.get(url)
+    status = tonumber(status)
+    if status ~= 200 or type(body) ~= "string" then
+        pauseApi(status == 429 and 300 or 10)
+        logApiError("mymemory status=" .. tostring(status) .. " " .. tostring(body):sub(1, 200))
+        return nil
+    end
+
+    local data = json.decode(body)
+    local rd = type(data) == "table" and data.responseData
+    local txt = type(rd) == "table" and rd.translatedText
+    local code = type(data) == "table" and tonumber(data.responseStatus)
+    if type(txt) ~= "string" or code ~= 200 or data.quotaFinished == true then
+        if type(data) == "table" and (data.quotaFinished == true or code == 429) then
+            pauseApi(1800)
+        else
+            pauseApi(10)
+        end
+        logApiError("mymemory: " .. body:sub(1, 200))
+        return nil
+    end
+
+    local restored = restoreMasked(htmlDecode(txt), kept)
+    if not restored then
+        print("[ceviri] bypass korunamadi: " .. masked .. " -> " .. txt)
+        return ""
+    end
+    return restored, nil
 end
 
 local memCache, memCount = {}, 0
@@ -312,8 +406,13 @@ local function memPut(key, value)
     memCache[key] = value
 end
 
-local function translate(text, html, targetLang, cb)
-    local key = targetLang .. "|" .. text:lower()
+local function translate(text, segments, source, target, cb)
+    if CONFIG.PROVIDER ~= "google" and source == target then
+        cb("")
+        return
+    end
+
+    local key = (CONFIG.PROVIDER == "google" and "auto" or source) .. ">" .. target .. "|" .. text:lower()
 
     local cached = memCache[key]
     if cached == nil then
@@ -334,7 +433,7 @@ local function translate(text, html, targetLang, cb)
         return
     end
 
-    if not apiKeySet or os.time() < apiPausedUntil then
+    if not apiReady or os.time() < apiPausedUntil then
         cb(nil)
         return
     end
@@ -349,16 +448,22 @@ local function translate(text, html, targetLang, cb)
     addUsage(#text)
 
     coroutine.wrap(function()
-        local raw, detected = googleTranslate(html, targetLang)
+        local raw, detected
+        if CONFIG.PROVIDER == "google" then
+            raw, detected = googleTranslate(segments, target)
+        else
+            raw, detected = myMemoryTranslate(segments, source, target)
+        end
+
         local result = nil
         if raw then
-            result = cleanOutput(htmlDecode(raw))
-            if GOOGLE_TO_LANG[detected or ""] == targetLang or result == "" or sameText(result, text) then
+            result = cleanOutput(raw)
+            if detected == target or result == "" or sameText(result, text) then
                 result = ""
             end
             memPut(key, result)
             DB:query("INSERT OR REPLACE INTO ceviri_cache (k, v, src, ts) VALUES (?, ?, ?, ?)",
-                key, result, tostring(detected or ""), os.time())
+                key, result, tostring(detected or source), os.time())
         end
 
         local callbacks = inflight[key] and inflight[key].callbacks or {}
@@ -410,7 +515,8 @@ local function deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName
             local uid = p:getUserID()
             if uid == speakerUID then
                 speakerHere = true
-            elseif receivers[uid] then
+            end
+            if receivers[uid] then
                 targets[#targets + 1] = p
             end
         end
@@ -445,9 +551,17 @@ local function handleWorldChat(world, player, message)
             end
         end
     end
+    if CONFIG.TEST_MODE then
+        local pair = LANGS[speakerLang].pair
+        if LANGS[pair] then
+            groups[pair] = groups[pair] or {}
+            groups[pair][speakerUID] = true
+            hasTarget = true
+        end
+    end
     if not hasTarget then return end
 
-    local html, needsApi = protectMessage(text)
+    local segments, needsApi = splitMessage(text)
     if not needsApi then return end
 
     local worldName = world:getName()
@@ -455,7 +569,7 @@ local function handleWorldChat(world, player, message)
     local speakerName = player:getName()
 
     for lang, receivers in pairs(groups) do
-        translate(text, html, lang, function(translated)
+        translate(text, segments, speakerLang, lang, function(translated)
             if not translated or translated == "" then return end
             timer.setTimeout(CONFIG.DELIVER_DELAY, function()
                 deliverWorldChat(worldName, speakerUID, speakerNetID, speakerName, text, translated, lang, receivers)
@@ -479,11 +593,13 @@ registerLuaCommand({
 
 local function showMenu(player)
     local s = getSettings(player)
+    local country = player:getCountry()
     local d = "set_default_color|`o\n" ..
         "add_label_with_icon|big|`wCeviri Modu``|left|18|\n" ..
         "add_spacer|small|\n" ..
         "add_textbox|Durum: " .. (s.enabled and "`2ACIK" or "`4KAPALI") .. "|left|\n" ..
         "add_textbox|`oDilin: `w" .. LANGS[s.lang].name .. "|left|\n" ..
+        "add_smalltext|`oUlke: " .. tostring(country) .. "|\n" ..
         "add_smalltext|`oBaska dilde yazilan mesajlarin cevirisi altinda gri renkte gosterilir.|\n" ..
         "add_spacer|small|\n" ..
         "add_button|ceviri_toggle|" .. (s.enabled and "`4Ceviriyi Kapat" or "`2Ceviriyi Ac") .. "|noflags|0|0|\n" ..
