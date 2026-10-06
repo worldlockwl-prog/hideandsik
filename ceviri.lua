@@ -11,7 +11,7 @@ local bypass = {
 
 local CONFIG = {
     PROVIDER = "claude",
-    FALLBACK_PROVIDER = "gemini",
+    FALLBACK_PROVIDER = "",
 
     GEMINI_KEY = "BURAYA_GEMINI_KEY",
     GEMINI_MODEL = "gemini-flash-lite-latest",
@@ -327,7 +327,7 @@ local function parseResponse(provider, res, status, langs, kept, original)
         if status == 400 or status == 401 or status == 403 or status == 404 then
             pausedUntil[provider] = os.time() + 300
         else
-            pausedUntil[provider] = os.time() + 10
+            pausedUntil[provider] = os.time() + 3
         end
         logError(provider .. " status=" .. tostring(status) .. " " .. tostring(res):sub(1, 200))
         return nil
