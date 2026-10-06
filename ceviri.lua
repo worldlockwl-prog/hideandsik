@@ -235,11 +235,13 @@ local function logError(msg)
 end
 
 local function providerReady(provider)
+    local key
     if provider == "claude" then
-        if CONFIG.CLAUDE_KEY == "" or CONFIG.CLAUDE_KEY == "BURAYA_CLAUDE_KEY" then return false end
+        key = CONFIG.CLAUDE_KEY
     elseif provider == "gemini" then
-        if CONFIG.GEMINI_KEY == "" or CONFIG.GEMINI_KEY == "BURAYA_GEMINI_KEY" then return false end
-    else
+        key = CONFIG.GEMINI_KEY
+    end
+    if type(key) ~= "string" or key == "" or key:sub(1, 6) == "BURAYA" then
         return false
     end
     return os.time() >= (pausedUntil[provider] or 0)
