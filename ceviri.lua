@@ -10,7 +10,8 @@ local bypass = {
 }
 
 local CONFIG = {
-    PROVIDER = "gemini",
+    PROVIDER = "claude",
+    FALLBACK_PROVIDER = "gemini",
 
     GEMINI_KEY = "BURAYA_GEMINI_KEY",
     GEMINI_MODEL = "gemini-flash-lite-latest",
@@ -223,7 +224,7 @@ local function keptIntact(s, kept)
     return true
 end
 
-local apiPausedUntil = 0
+local pausedUntil = {}
 local lastErrorLog = 0
 
 local function logError(msg)
@@ -233,14 +234,31 @@ local function logError(msg)
     end
 end
 
-local function buildRequest(tagged, langs)
+local function providerReady(provider)
+    if provider == "claude" then
+        if CONFIG.CLAUDE_KEY == "" or CONFIG.CLAUDE_KEY == "BURAYA_CLAUDE_KEY" then return false end
+    elseif provider == "gemini" then
+        if CONFIG.GEMINI_KEY == "" or CONFIG.GEMINI_KEY == "BURAYA_GEMINI_KEY" then return false end
+    else
+        return false
+    end
+    return os.time() >= (pausedUntil[provider] or 0)
+end
+
+local function pickProvider()
+    if providerReady(CONFIG.PROVIDER) then return CONFIG.PROVIDER end
+    if providerReady(CONFIG.FALLBACK_PROVIDER) then return CONFIG.FALLBACK_PROVIDER end
+    return nil
+end
+
+local function buildRequest(provider, tagged, langs)
     local names = {}
     for _, code in ipairs(langs) do
         names[#names + 1] = code .. " (" .. LANGS[code].prompt .. ")"
     end
     local userText = "Languages: " .. table.concat(names, ", ") .. "\nMessage: " .. tagged
 
-    if CONFIG.PROVIDER == "claude" then
+    if provider == "claude" then
         return {
             url = "https://api.anthropic.com/v1/messages",
             headers = {
@@ -277,9 +295,9 @@ local function buildRequest(tagged, langs)
     }
 end
 
-local function responseText(data)
+local function responseText(provider, data)
     local out = {}
-    if CONFIG.PROVIDER == "claude" then
+    if provider == "claude" then
         if type(data.content) == "table" then
             for _, block in ipairs(data.content) do
                 if type(block) == "table" and block.type == "text" and type(block.text) == "string" then
@@ -301,28 +319,28 @@ local function responseText(data)
     return table.concat(out)
 end
 
-local function parseResponse(res, status, langs, kept, original)
+local function parseResponse(provider, res, status, langs, kept, original)
     status = tonumber(status)
     if status ~= 200 or type(res) ~= "string" then
         if status == 400 or status == 401 or status == 403 or status == 404 then
-            apiPausedUntil = os.time() + 60
+            pausedUntil[provider] = os.time() + 300
         else
-            apiPausedUntil = os.time() + 5
+            pausedUntil[provider] = os.time() + 10
         end
-        logError("API status=" .. tostring(status) .. " " .. tostring(res):sub(1, 200))
+        logError(provider .. " status=" .. tostring(status) .. " " .. tostring(res):sub(1, 200))
         return nil
     end
 
     local data = json.decode(res)
     if type(data) ~= "table" then
-        logError("API bozuk cevap: " .. res:sub(1, 200))
+        logError(provider .. " bozuk cevap: " .. res:sub(1, 200))
         return nil
     end
 
-    local jsonText = responseText(data):match("%b{}")
+    local jsonText = responseText(provider, data):match("%b{}")
     local translations = jsonText and json.decode(jsonText)
     if type(translations) ~= "table" then
-        logError("API JSON vermedi: " .. res:sub(1, 200))
+        logError(provider .. " JSON vermedi: " .. res:sub(1, 200))
         return nil
     end
 
@@ -404,6 +422,26 @@ local function cachePut(key, entry)
     cache[key] = entry
 end
 
+local function requestTranslation(provider, tagged, kept, langs, original, onDone, allowFallback)
+    local request = buildRequest(provider, tagged, langs)
+    coroutine.wrap(function()
+        local res, status = http.post(request.url, request.headers, request.body)
+        local result = parseResponse(provider, res, status, langs, kept, original)
+        if result then
+            onDone(result)
+            return
+        end
+        local fallback = CONFIG.FALLBACK_PROVIDER
+        if allowFallback and fallback ~= provider and providerReady(fallback) then
+            timer.setTimeout(0.05, function()
+                requestTranslation(fallback, tagged, kept, langs, original, onDone, false)
+            end)
+        else
+            onDone(nil)
+        end
+    end)()
+end
+
 local function deliver(world, speakerUID, speakerNetID, speakerName, entry)
     for _, p in ipairs(world:getPlayers()) do
         local uid = p:getUserID()
@@ -412,10 +450,10 @@ local function deliver(world, speakerUID, speakerNetID, speakerName, entry)
             local translated = entry[s.lang]
             if translated and translated ~= "" then
                 if CONFIG.SHOW_BUBBLE then
-                    p:sendVariant({ "OnTalkBubble", speakerNetID, "CP:0_PL:1_OID:_player_chat=`b" .. translated, 0, 0 })
+                    p:sendVariant({ "OnTalkBubble", speakerNetID, "CP:0_PL:1_OID:_player_chat=`5[ " .. translated.." ]", 0, 0 })
                 end
                 if CONFIG.SHOW_CONSOLE then
-                    p:sendVariant({ "OnConsoleMessage", "CP:0_PL:1_OID:_CT:[W]_ `6<```w`b@" .. speakerName .. "```6>`` `$`b" .. translated .. "``" })
+                    p:sendVariant({"OnConsoleMessage", "CP:0_PL:1_OID:_CT:[W]_ `6<`w" .. speakerName .. " `2[Translated]`6> `$`b" .. translated})
                 end
             end
         end
@@ -465,7 +503,8 @@ local function handleChat(world, player, message)
     end
 
     if pending[key] and os.time() - pending[key] < 15 then return end
-    if os.time() < apiPausedUntil then return end
+    local provider = pickProvider()
+    if not provider then return end
     if not canSpend() then
         logError("gunluk istek limiti doldu")
         return
@@ -475,19 +514,15 @@ local function handleChat(world, player, message)
     spend()
 
     local tagged, kept = buildTagged(segments)
-    local request = buildRequest(tagged, missing)
-
-    coroutine.wrap(function()
-        local res, status = http.post(request.url, request.headers, request.body)
+    requestTranslation(provider, tagged, kept, missing, text, function(result)
         pending[key] = nil
-        local result = parseResponse(res, status, missing, kept, text)
         if not result then return end
         for code, value in pairs(result) do
             entry[code] = value
         end
         cachePut(key, entry)
         deliver(world, speakerUID, speakerNetID, speakerName, entry)
-    end)()
+    end, true)
 end
 
 onPlayerChatCallback(function(world, player, message)
