@@ -3,40 +3,40 @@
   "esitlik": 1,
   "kasalar": [
     {
-      "id": "caylak", "ad": "Çaylak Kasası", "emoji": "📦",
+      "id": "caylak", "ad": "Çaylak Kasası", "emoji": "📦", "fiyat": 5,
       "gorunum": {"renk": "#8a5a2b", "susleme": "#d4a94a", "alev": ["#f2ffd0", "#7dff4a", "#178a2a"]},
-      "sanslar": {"siradan": "dolgu", "siradisi": 38, "gizemli": 14, "destansi": 1.5},
-      "filtre": {"destansi": {"max": 200}}
+      "sanslar": {"siradan": "dolgu", "siradisi": 44, "gizemli": 3.5},
+      "filtre": {}
     },
     {
-      "id": "bronz", "ad": "Bronz Kasa", "emoji": "🥉",
+      "id": "bronz", "ad": "Bronz Kasa", "emoji": "🥉", "fiyat": 15,
       "gorunum": {"renk": "#b4692e", "susleme": "#ffcf40", "alev": ["#fff3b0", "#ff9a1f", "#ff3d00"]},
-      "sanslar": {"siradan": "dolgu", "siradisi": 40, "gizemli": 30, "destansi": 4},
+      "sanslar": {"siradan": 15, "siradisi": "dolgu", "gizemli": 24.3, "destansi": 0.7},
+      "filtre": {"destansi": {"max": 150}}
+    },
+    {
+      "id": "gumus", "ad": "Gümüş Kasa", "emoji": "🥈", "fiyat": 40,
+      "gorunum": {"renk": "#8f9bb0", "susleme": "#e8ecf3", "alev": ["#f6e6ff", "#c86bff", "#5a17c4"]},
+      "sanslar": {"siradisi": 25, "gizemli": "dolgu", "destansi": 4},
+      "filtre": {"siradisi": {"min": 10}, "destansi": {"max": 200}}
+    },
+    {
+      "id": "altin", "ad": "Altın Kasa", "emoji": "🥇", "fiyat": 100,
+      "gorunum": {"renk": "#e0a21a", "susleme": "#fff1b0", "alev": ["#fff8d0", "#ffb300", "#ff2e00"]},
+      "sanslar": {"gizemli": "dolgu", "destansi": 33, "efsanevi": 0.003},
       "filtre": {"destansi": {"max": 500}}
     },
     {
-      "id": "gumus", "ad": "Gümüş Kasa", "emoji": "🥈",
-      "gorunum": {"renk": "#8f9bb0", "susleme": "#e8ecf3", "alev": ["#f6e6ff", "#c86bff", "#5a17c4"]},
-      "sanslar": {"siradisi": "dolgu", "gizemli": 40, "destansi": 16, "efsanevi": 0.003},
-      "filtre": {"efsanevi": {"max": 65000}}
-    },
-    {
-      "id": "altin", "ad": "Altın Kasa", "emoji": "🥇",
-      "gorunum": {"renk": "#e0a21a", "susleme": "#fff1b0", "alev": ["#fff8d0", "#ffb300", "#ff2e00"]},
-      "sanslar": {"siradisi": "dolgu", "gizemli": 40, "destansi": 35, "efsanevi": 0.02},
-      "filtre": {"siradisi": {"min": 10}}
-    },
-    {
-      "id": "elmas", "ad": "Elmas Kasa", "emoji": "💎",
+      "id": "elmas", "ad": "Elmas Kasa", "emoji": "💎", "fiyat": 250,
       "gorunum": {"renk": "#2f9fd0", "susleme": "#e8fdff", "alev": ["#e8fdff", "#4fd8ff", "#1a4dff"]},
-      "sanslar": {"gizemli": "dolgu", "destansi": 70, "efsanevi": 0.15},
-      "filtre": {"gizemli": {"min": 40}, "destansi": {"min": 300}}
+      "sanslar": {"gizemli": 30, "destansi": "dolgu", "efsanevi": 0.02},
+      "filtre": {"gizemli": {"min": 40}}
     },
     {
-      "id": "efsane", "ad": "Efsane Kasa", "emoji": "🔥",
+      "id": "efsane", "ad": "Efsane Kasa", "emoji": "🔥", "fiyat": 750,
       "gorunum": {"renk": "#5a1018", "susleme": "#ffcf40", "alev": ["#fff3b0", "#ff5a1f", "#c4001a"]},
-      "sanslar": {"gizemli": "dolgu", "destansi": 88, "efsanevi": 0.35},
-      "filtre": {"gizemli": {"min": 45}, "destansi": {"min": 400}}
+      "sanslar": {"destansi": "dolgu", "efsanevi": 0.035},
+      "filtre": {"destansi": {"min": 400}}
     }
   ]
 }

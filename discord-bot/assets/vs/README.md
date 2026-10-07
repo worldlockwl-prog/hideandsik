@@ -48,27 +48,40 @@ botu yeniden başlat.
 1. Tasarımda her nadirliğin çıkma şansı verilir; biri `"dolgu"` olur ve kalan şansı alır.
 2. Bir nadirliğin içinde item şansı **değeriyle ters orantılı**: aynı nadirlikte 1.000 DL'lik
    item, 100 DL'liğe göre 10 kat daha nadir çıkar. (`"esitlik": 0` yaparsan hepsi eşit şanslı olur.)
-3. Kasanın ortalama item değeri hesaplanır, **fiyat = ortalama / rtp**, sonra yuvarlak sayıya çekilir.
-4. Yuvarlamadan sonra RTP tam tutsun diye dolgu dışı şanslar aynı oranda hafifçe ölçeklenir.
+3. Tasarımda `fiyat` yazılıysa o fiyat kullanılır. Yazılmamışsa kasanın ortalama item değeri
+   hesaplanır, **fiyat = ortalama / rtp**, sonra yuvarlak sayıya çekilir.
+4. RTP tam tutsun diye dolgudan değerli nadirliklerin şansları aynı oranda hafifçe ölçeklenir
+   (dolgudan ucuz olanlar tasarımdaki gibi kalır).
 
 ### Tasarım dosyası (`araclar/kasa-tasarimi.json`)
 
 ```json
 "rtp": 0.93,
 {
-  "id": "elmas", "ad": "Elmas Kasa", "emoji": "💎",
+  "id": "elmas", "ad": "Elmas Kasa", "emoji": "💎", "fiyat": 250,
   "gorunum": {"renk": "#2f9fd0", "susleme": "#e8fdff", "alev": ["#e8fdff", "#4fd8ff", "#1a4dff"]},
-  "sanslar": {"gizemli": "dolgu", "destansi": 70, "efsanevi": 0.15},
-  "filtre": {"gizemli": {"min": 40}, "destansi": {"min": 300}}
+  "sanslar": {"gizemli": 30, "destansi": "dolgu", "efsanevi": 0.02},
+  "filtre": {"gizemli": {"min": 40}}
 }
 ```
+
+Hazır gelen kasalar (hepsi %93 RTP, fiyatlar item seviyelerine göre seçildi):
+
+| Kasa | Fiyat | Ağırlıkla çıkan | Kâr şansı | Efsanevi |
+|---|---|---|---|---|
+| 📦 Çaylak | 5 DL | Sıradan / Sıradışı | %31 | yok |
+| 🥉 Bronz | 15 DL | Sıradışı / Gizemli | %33 | yok |
+| 🥈 Gümüş | 40 DL | Gizemli | %31 | yok |
+| 🥇 Altın | 100 DL | Gizemli / Destansı (≤500) | %28 | 1/34.483 |
+| 💎 Elmas | 250 DL | Destansı | %25 | 1/6.288 |
+| 🔥 Efsane | 750 DL | Destansı (≥400) | %32 | 1/2.582 |
 
 | Alan | Açıklama |
 |---|---|
 | `rtp` | Ortalama geri dönüş. 0.93 = açılan her 100 DL'den ortalama 93 DL item çıkar, 7 DL kasada kalır. Kasa başına da yazılabilir. |
 | `sanslar` | Nadirlik → yüzde şans. Yazılmayan nadirlik o kasadan hiç çıkmaz. |
 | `filtre` | Nadirlik içinden sadece belirli değer aralığındaki itemleri al: `min`, `max`, `haric: ["id"]` |
-| `fiyat` | (isteğe bağlı) Fiyatı sabitlemek istersen yaz; algoritma şansları bu fiyata göre ayarlar. |
+| `fiyat` | Kasanın fiyatı; algoritma şansları bu fiyata göre ayarlar. Silersen fiyatı algoritma seçer. |
 | `gorunum` | Sandığın gövde/süsleme rengi ve 3 renkli alevi (`#rrggbb`). İsteğe bağlı `gorsel`: kendi kasa PNG'n. |
 
 Daha cömert bir kasa için `rtp`'yi yükselt; daha çok "büyük vurgun" hissi için yüksek
@@ -85,31 +98,33 @@ o kasadan çıkabilecek itemleri ve her birinin yüzde şansını içerir. Ama o
 Bot açılırken her kasa için konsola şunu yazar:
 
 ```
-[vs] Elmas Kasa (600 DL, 39 item) ortalama geri dönüş: %93.0
+[vs] Elmas Kasa (250 DL, 46 item) ortalama geri dönüş: %93.0
 ```
 
 %100'ün altı kasanın (senin) uzun vadede kazandığı anlamına gelir; %100'ü geçerse yanında
 uyarı çıkar.
 
 **Jackpot riski:** efsanevi itemler 50.000–100.000 DL. Uzun vadede kasa yine kârlıdır ama tek
-bir efsanevi düşüşü çok büyük bir ödemedir (ör. Efsane Kasa'da her ~287 açılışta bir).
+bir efsanevi düşüşü çok büyük bir ödemedir (ör. Efsane Kasa'da her ~2.600 açılışta bir).
 Ekonomin bu kadar büyük tek seferlik ödemeleri kaldıramıyorsa efsanevi değerlerini düşür ya da
 tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 
 ## Animasyon nasıl çalışıyor
 
-Rakip katıldığı an bütün kasalar açılır ve kazanan belli olur (ödeme de o an yapılır). Ardından
-battle'ın tamamı **önceden tek bir GIF olarak çizilir** ve tek seferde gösterilir; turlar arasında
-mesaj düzenlenmez, resim yeniden yüklenmez. 5'ten fazla kasalı battle'lar 5'er turluk GIF'lere
-bölünür (dosya boyutu için). GIF bitince mesaj sabit sonuç resmine çevrilir.
+Rakip katıldığı an bütün kasalar açılır, çıkacak itemler ve kazanan belli olur (ödeme de o an
+yapılır). Animasyon sadece bu hazır sonuçları gösterir; turlar **önceden GIF olarak çizilir**,
+saniyede 25 kare oynar. İlk GIF 2 tur (animasyon ~3 sn'de başlasın diye), sonrakiler 4'er tur;
+her parça bir öncekisi oynarken hazırlanır. GIF bitince mesaj sabit sonuç resmine çevrilir.
 
 - Item önce sahnede görünür, bir sonraki turun başında envantere uçar ve orada kalır.
 - GIF'in son karesi 10 dakika sürecek şekilde ayarlı: Discord GIF'leri döngüye soktuğu için
   aksi halde animasyon başa sarıp envanter "geri gidiyormuş" gibi görünürdü.
-- Hazırlık süresi yaklaşık: 3 kasa ~3 sn, 5 kasa ~5 sn (bu sırada bot diğer komutlara cevap verir).
+- Rakip katıldıktan sonra animasyonun başlaması ~3 sn sürer (bu sırada bot diğer komutlara cevap verir).
+- Kareler çizildikçe GIF'e yazılır, bellekte biriktirilmez.
 
 `vs.ts` içindeki `ZAMANLAMA` sabitiyle kare sayıları/süreleri, item çıktıktan sonraki bekleme ve
-bir GIF'e sığacak tur sayısı (`gifBasinaTur`) ayarlanabilir.
+GIF başına tur sayısı (`ilkGifTur`, `gifBasinaTur`) ayarlanabilir. Kare sayısını artırıp
+gecikmeyi düşürmek animasyonu akıcılaştırır ama GIF'i büyütür.
 
 ## Güvenlik notları
 
@@ -123,3 +138,4 @@ bir GIF'e sığacak tur sayısı (`gifBasinaTur`) ayarlanabilir.
   **45 sn** yeni battle açamaz ve katılamaz. Maç oynanmadan biterse (iptal, kimse katılmadı,
   kurulum süresi doldu) sadece açan kişi **15 sn** bekler. Süreler `vs.ts` içinde
   `MAC_SONRASI_BEKLEME` / `IPTAL_SONRASI_BEKLEME`. Bot yeniden başlarsa bekleme süreleri sıfırlanır.
+  Bekleme mesajındaki geri sayım bitince mesaj "✅ Bekleme süren doldu" yazısına döner.

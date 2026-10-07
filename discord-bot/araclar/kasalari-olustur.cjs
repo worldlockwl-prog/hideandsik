@@ -9,8 +9,8 @@
 //   2) Bir nadirliğin içinde item şansı değeriyle TERS orantılıdır (ağırlık = 1 / değer^esitlik):
 //      aynı nadirlikte 1000 DL'lik item, 100 DL'lik olandan 10 kat daha nadir çıkar.
 //   3) Kasanın ortalama item değeri hesaplanır; fiyat = ortalama / rtp, sonra yuvarlak sayıya çekilir.
-//   4) Yuvarlamadan sonra RTP tam tutsun diye dolgu dışındaki nadirliklerin şansları aynı oranda
-//      hafifçe ölçeklenir (genelde %1-3).
+//      Tasarımda "fiyat" yazılıysa o fiyat kullanılır.
+//   4) RTP tam tutsun diye dolgudan değerli nadirliklerin şansları aynı oranda hafifçe ölçeklenir.
 // Item değerlerini değiştirdikten sonra bu scripti tekrar çalıştırman yeterli; fiyatlar ve
 // şanslar yeniden hesaplanır. Botu yeniden başlatmayı unutma.
 
@@ -73,14 +73,20 @@ for (const k of tasarim.kasalar) {
     const dogalFiyat = beklenen(1) / rtp;
     const fiyat = k.fiyat ?? yuvarlakFiyat(dogalFiyat);
 
-    // --- 4) Yuvarlanmış fiyatta RTP tutsun: dolgu dışı şansları aynı oranda ölçekle ---
+    // --- 4) Fiyatta RTP tam tutsun: dolgudan DEĞERLİ nadirliklerin şanslarını aynı oranda ölçekle ---
+    //     (dolgudan ucuz olanlar tasarımdaki gibi kalır)
     const hedef = rtp * fiyat;
     const E0 = gruplar[dolgu].ortalama;
-    const egim = digerleri.reduce((t, n) => t + p0[n] * (gruplar[n].ortalama - E0), 0);
-    const olcek = (hedef - E0) / egim;
-    const p = Object.fromEntries(digerleri.map(n => [n, p0[n] * olcek]));
+    const ust = digerleri.filter(n => gruplar[n].ortalama > E0);
+    const sabitler = digerleri.filter(n => !ust.includes(n));
+    const sabitKatki = sabitler.reduce((t, n) => t + p0[n] * (gruplar[n].ortalama - E0), 0);
+    const egim = ust.reduce((t, n) => t + p0[n] * (gruplar[n].ortalama - E0), 0);
+    if (!ust.length) hata('dolgudan değerli bir nadirlik yok; fiyat tutturulamaz');
+    const olcek = (hedef - E0 - sabitKatki) / egim;
+    const p = Object.fromEntries(digerleri.map(n => [n, p0[n] * (ust.includes(n) ? olcek : 1)]));
     p[dolgu] = 1 - digerleri.reduce((t, n) => t + p[n], 0);
-    if (!(olcek > 0) || p[dolgu] < 0.02) hata(`şanslar bu fiyata uymuyor (dolgu şansı %${(p[dolgu] * 100).toFixed(2)}); tasarımdaki şansları düşür`);
+    if (!(olcek > 0) || p[dolgu] < 0.02) hata(`şanslar bu fiyata uymuyor (dolgu şansı %${(p[dolgu] * 100).toFixed(2)}); tasarımdaki şansları ya da fiyatı değiştir`);
+    if (olcek < 0.5 || olcek > 2) console.warn(`⚠️  [${k.id}] ${ust.map(n => NADIRLIK_ADI[n]).join('/')} şansları ${olcek.toFixed(2)} katına çekildi; tasarımdaki şanslar bu fiyattan epey uzak`);
 
     // --- Item başına şans (yüzde, 6 ondalık) ---
     const icerik = [];
