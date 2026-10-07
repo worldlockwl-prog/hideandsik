@@ -1,8 +1,8 @@
 // Kasa oluşturucu: kasa-tasarimi.json + itemler.json -> assets/vs/kasalar/*.json
 //
 // Kullanım (bot klasöründen):
-//   node araclar/kasalari-olustur.js                 -> assets/vs klasörünü kullanır
-//   node araclar/kasalari-olustur.js <assets/vs yolu>
+//   node araclar/kasalari-olustur.cjs                 -> assets/vs klasörünü kullanır
+//   node araclar/kasalari-olustur.cjs <assets/vs yolu>
 //
 // Algoritma (her kasa için):
 //   1) Tasarımda her nadirliğin çıkma şansı verilir; biri "dolgu" olur ve kalan şansı alır.

@@ -35,7 +35,7 @@ Kare, şeffaf arka planlı (örn. 256×256) PNG'ler en iyi sonucu verir. Dosya b
 Kasa içerikleri ve fiyatları elle yazılmaz, **algoritma hesaplar**:
 
 ```
-node araclar/kasalari-olustur.js
+node araclar/kasalari-olustur.cjs
 ```
 
 Bu komut `araclar/kasa-tasarimi.json` + `assets/vs/itemler.json` dosyalarını okuyup
