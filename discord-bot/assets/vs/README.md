@@ -96,11 +96,20 @@ bir efsanevi düşüşü çok büyük bir ödemedir (ör. Efsane Kasa'da her ~28
 Ekonomin bu kadar büyük tek seferlik ödemeleri kaldıramıyorsa efsanevi değerlerini düşür ya da
 tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 
-## Animasyon hızı
+## Animasyon nasıl çalışıyor
 
-`vs.ts` içindeki `ZAMANLAMA` sabiti: tur başı geçişi (önceki item envantere uçar, yeni sandık
-düşer), sallanma kare sayısı/süresi, item'in yükselme hızı ve item çıktıktan sonra bir sonraki
-tura geçmeden önceki bekleme.
+Rakip katıldığı an bütün kasalar açılır ve kazanan belli olur (ödeme de o an yapılır). Ardından
+battle'ın tamamı **önceden tek bir GIF olarak çizilir** ve tek seferde gösterilir; turlar arasında
+mesaj düzenlenmez, resim yeniden yüklenmez. 5'ten fazla kasalı battle'lar 5'er turluk GIF'lere
+bölünür (dosya boyutu için). GIF bitince mesaj sabit sonuç resmine çevrilir.
+
+- Item önce sahnede görünür, bir sonraki turun başında envantere uçar ve orada kalır.
+- GIF'in son karesi 10 dakika sürecek şekilde ayarlı: Discord GIF'leri döngüye soktuğu için
+  aksi halde animasyon başa sarıp envanter "geri gidiyormuş" gibi görünürdü.
+- Hazırlık süresi yaklaşık: 3 kasa ~3 sn, 5 kasa ~5 sn (bu sırada bot diğer komutlara cevap verir).
+
+`vs.ts` içindeki `ZAMANLAMA` sabitiyle kare sayıları/süreleri, item çıktıktan sonraki bekleme ve
+bir GIF'e sığacak tur sayısı (`gifBasinaTur`) ayarlanabilir.
 
 ## Güvenlik notları
 
