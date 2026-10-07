@@ -119,3 +119,7 @@ bir GIF'e sığacak tur sayısı (`gifBasinaTur`) ayarlanabilir.
   yazar). Bu dosyayı elle düzenleme; normalde hep boş (`[]`) durur. Bot bu klasöre yazabilmeli.
 - **Aynı anda en fazla 3 battle** animasyona girer (`MAX_ESZAMANLI_BATTLE`). Sınır doluyken
   lobiler açık kalır, "Katıl"a basan kişiye birazdan tekrar denemesi söylenir.
+- **Bekleme süresi (cooldown)**: maç bittikten sonra (sonuç ekranı gelince) iki oyuncu da
+  **45 sn** yeni battle açamaz ve katılamaz. Maç oynanmadan biterse (iptal, kimse katılmadı,
+  kurulum süresi doldu) sadece açan kişi **15 sn** bekler. Süreler `vs.ts` içinde
+  `MAC_SONRASI_BEKLEME` / `IPTAL_SONRASI_BEKLEME`. Bot yeniden başlarsa bekleme süreleri sıfırlanır.

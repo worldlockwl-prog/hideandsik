@@ -184,6 +184,29 @@ const LOBI_SURESI = 120_000;     // bu sürede rakip katılmazsa battle iptal + 
 // --- ZIRH 1: AYNI ANDA TEK BATTLE (hem kurucu hem rakip için) ---
 const aktifOynayanlar = new Set<string>();
 
+// --- BEKLEME SÜRESİ (cooldown) ---
+// Maç bittiği an (sonuç ekranı gelince) iki oyuncu da bu süre boyunca yeni battle açamaz/katılamaz.
+// Maç oynanmadan biterse (iptal, kimse katılmadı, kurulum süresi doldu) sadece açan kişi kısa süre bekler.
+const MAC_SONRASI_BEKLEME = 45_000;
+const IPTAL_SONRASI_BEKLEME = 15_000;
+const beklemeBitisi = new Map<string, number>();
+
+// Bekleme bitmediyse bitiş zamanını, bittiyse null döner
+function beklemedeMi(kullanici: string): number | null {
+    const bitis = beklemeBitisi.get(kullanici);
+    if (bitis === undefined) return null;
+    if (bitis <= Date.now()) {
+        beklemeBitisi.delete(kullanici);
+        return null;
+    }
+    return bitis;
+}
+
+function beklemeYazisi(bitis: number): string {
+    // <t:...:R> Discord'da canlı geri sayım olarak görünür ("12 saniye içinde")
+    return `⏳ Son battle'ından sonra biraz beklemelisin: <t:${Math.ceil(bitis / 1000)}:R> tekrar deneyebilirsin.`;
+}
+
 // --- ZIRH 2: AYNI ANDA OYNANAN BATTLE SINIRI ---
 // GIF üretimi işlemciyi yoruyor; çok sayıda battle aynı anda animasyona girerse bot yavaşlar.
 // Sınır doluysa lobiler açık kalır, sadece "Katıl" o an reddedilir.
@@ -1798,6 +1821,11 @@ export class VsCommand implements Command {
             await interaction.editReply({ content: '❌ Zaten devam eden bir battle\'ın var! Önce onu bitir.' });
             return;
         }
+        const kurucuBeklemesi = beklemedeMi(userId);
+        if (kurucuBeklemesi) {
+            await interaction.editReply({ content: beklemeYazisi(kurucuBeklemesi) });
+            return;
+        }
         aktifOynayanlar.add(userId);
 
         // --- PARA TAKİBİ ---
@@ -1929,6 +1957,11 @@ export class VsCommand implements Command {
                 }
                 if (aktifOynayanlar.has(i.user.id)) {
                     await reddet('❌ Zaten devam eden bir battle\'ın var.');
+                    continue;
+                }
+                const katilanBeklemesi = beklemedeMi(i.user.id);
+                if (katilanBeklemesi) {
+                    await reddet(beklemeYazisi(katilanBeklemesi));
                     continue;
                 }
                 if (oynananBattleSayisi >= MAX_ESZAMANLI_BATTLE) {
@@ -2084,6 +2117,17 @@ export class VsCommand implements Command {
             aktifOynayanlar.delete(userId);
             if (rakip) aktifOynayanlar.delete(rakip.id);
             if (battleSayildi) oynananBattleSayisi--;
+
+            // Bekleme süresi burada, yani maç (animasyon + sonuç ekranı) bittikten sonra başlar
+            const simdi = Date.now();
+            if (odemeYapildi) {
+                beklemeBitisi.set(userId, simdi + MAC_SONRASI_BEKLEME);
+                if (rakip) beklemeBitisi.set(rakip.id, simdi + MAC_SONRASI_BEKLEME);
+            } else {
+                beklemeBitisi.set(userId, simdi + IPTAL_SONRASI_BEKLEME);
+            }
+            // Süresi dolmuş kayıtları temizle (harita büyümesin)
+            for (const [k, bitis] of beklemeBitisi) if (bitis <= simdi) beklemeBitisi.delete(k);
         }
     }
 }
