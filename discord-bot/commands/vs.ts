@@ -59,11 +59,9 @@ const ZAMANLAMA = {
     patlamaGecikme: 40,
     yukselmeKaresi: 10,      // item'in sandıktan yükseldiği kare sayısı
     yukselmeGecikme: 40,
-    sonucuGoster: 2200,      // item çıktıktan sonra bir sonraki tura geçmeden bekleme
+    sonucuGoster: 2200,      // item çıktıktan sonra ekranda kalma süresi (sıradaki turun GIF'inin ilk karesi)
     sonucuGosterKalabalik: 1600, // 5'ten fazla kasalı battle'da aynı bekleme
-    ilkGifTur: 2,            // ilk GIF kısa tutulur ki animasyon çabuk başlasın; sonrakiler o oynarken hazırlanır
-    gifBasinaTur: 4,         // sonraki GIF'lerde en fazla bu kadar tur (dosya boyutu için)
-    yuklemePayi: 1500        // GIF'in izleyicinin Discord'unda inip başlaması için ek bekleme
+    yuklemePayi: 1000        // GIF'in izleyicinin Discord'unda inip başlaması için ek bekleme
 };
 
 // ==================================================
@@ -2067,9 +2065,12 @@ export class VsCommand implements Command {
             odemeYapildi = true;
 
             // ==================================================
-            // 4) ANİMASYON: sonuçlar zaten belli. Bütün battle önceden çizilip GIF olarak oynatılır
-            //    (ilk parça ZAMANLAMA.ilkGifTur, sonrakiler en fazla ZAMANLAMA.gifBasinaTur tur).
-            //    Parça içinde turlar arasında mesaj düzenlenmez.
+            // 4) ANİMASYON: sonuçlar zaten belli, animasyon sadece onları gösterir. Her tur ayrı bir GIF.
+            //    Discord GIF'leri istediği an baştan oynatabiliyor ya da ilk karesini gösterebiliyor
+            //    (pencere odaktan çıkıp girince, mesaj kaydırılınca, mobilde). Bu yüzden her GIF'in İLK
+            //    karesi o ana kadar açılmış her şeyi gösterir: bir önceki turun sonucu (item sahnede,
+            //    öncekiler envanterde) ve sonucu gösterme beklemesi de bu karededir. GIF baştan
+            //    oynasa bile envanter hiçbir zaman geri gitmez, açılmış bir item kaybolmaz.
             // ==================================================
             const [rakipAvatar] = await Promise.all([
                 avatarYukle(rakip),
@@ -2117,29 +2118,27 @@ export class VsCommand implements Command {
             };
 
             const n = kasalar.length;
-            const parcalar: [number, number][] = [];
-            for (let ilk = 0; ilk < n;) {
-                const son = Math.min(n, ilk + (ilk === 0 ? ZAMANLAMA.ilkGifTur : ZAMANLAMA.gifBasinaTur));
-                parcalar.push([ilk, son]);
-                ilk = son;
-            }
-            for (const [ilkTur, sonTur] of parcalar) {
-                const sonParca = sonTur === n;
-
+            // tur === n: son GIF (son item envantere uçar, sonuç ekranı gelir)
+            for (let tur = 0; tur <= n; tur++) {
+                const sonParca = tur === n;
                 const kareler: AnimasyonKaresi[] = [];
-                for (let tur = ilkTur; tur < sonTur; tur++) {
-                    kareler.push(...turKareleri(kasalar, tur, sonuclar, temelOyuncular, sonucuGoster, fazlar[tur]));
+                if (tur > 0) {
+                    const oncekiTur = turKareleri(kasalar, tur - 1, sonuclar, temelOyuncular, sonucuGoster, fazlar[tur - 1]);
+                    const oncekiTurunSonucu = oncekiTur[oncekiTur.length - 1];
+                    kareler.push({ ...oncekiTurunSonucu, gecikme: sonucuGoster, cizim: 'tam' });
                 }
                 if (sonParca) {
                     kareler.push(...kapanisKareleri(kasalar, sonuclar, temelOyuncular));
                     kareler.push({ d: sonucEkrani, gecikme: 0 });
+                } else {
+                    kareler.push(...turKareleri(kasalar, tur, sonuclar, temelOyuncular, sonucuGoster, fazlar[tur]));
                 }
                 // GIF'in son karesi çok uzun sürer (döngü olmasın); bizim beklememiz ondan öncekilerin toplamı
-                // + son karenin görünme payı + izleyicide yüklenme payı.
+                // + izleyicide yüklenme payı. Item'in ekranda kalma süresi sıradaki GIF'in ilk karesinde.
                 const oynatma = kareler.slice(0, -1).reduce((t, k) => t + k.gecikme, 0)
-                    + (sonParca ? 1500 : sonucuGoster) + ZAMANLAMA.yuklemePayi;
-                const turYazisi = sonTur - ilkTur > 1 ? `Tur ${ilkTur + 1}-${sonTur}/${n}` : `Tur ${ilkTur + 1}/${n}`;
-                const metin = `## ⚔️ <@${userId}> vs <@${rakipId}>\n🎲 Kasalar açılıyor... (${turYazisi})`;
+                    + (sonParca ? 1500 : 0) + ZAMANLAMA.yuklemePayi;
+                const durum = sonParca ? 'Sonuç hesaplanıyor...' : `Kasalar açılıyor... (Tur ${tur + 1}/${n})`;
+                const metin = `## ⚔️ <@${userId}> vs <@${rakipId}>\n🎲 ${durum}`;
                 if (!await goster(await gifOlustur(kareler), metin, oynatma)) break;
             }
 

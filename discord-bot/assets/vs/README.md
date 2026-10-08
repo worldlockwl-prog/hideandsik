@@ -112,19 +112,20 @@ tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 ## Animasyon nasıl çalışıyor
 
 Rakip katıldığı an bütün kasalar açılır, çıkacak itemler ve kazanan belli olur (ödeme de o an
-yapılır). Animasyon sadece bu hazır sonuçları gösterir; turlar **önceden GIF olarak çizilir**,
-saniyede 25 kare oynar. İlk GIF 2 tur (animasyon ~3 sn'de başlasın diye), sonrakiler 4'er tur;
-her parça bir öncekisi oynarken hazırlanır. GIF bitince mesaj sabit sonuç resmine çevrilir.
+yapılır). Animasyon sadece bu hazır sonuçları gösterir: **her tur ayrı bir GIF**, saniyede 25 kare.
+Her GIF bir öncekisi oynarken hazırlanır; GIF'ler bitince mesaj sabit sonuç resmine çevrilir.
 
-- Item önce sahnede görünür, bir sonraki turun başında envantere uçar ve orada kalır.
-- GIF'in son karesi 10 dakika sürecek şekilde ayarlı: Discord GIF'leri döngüye soktuğu için
-  aksi halde animasyon başa sarıp envanter "geri gidiyormuş" gibi görünürdü.
-- Rakip katıldıktan sonra animasyonun başlaması ~3 sn sürer (bu sırada bot diğer komutlara cevap verir).
+- Discord GIF'leri istediği an baştan oynatabiliyor ya da sadece ilk karesini gösterebiliyor
+  (pencere odaktan çıkıp girince, mesaj kaydırılınca, mobilde). Bu yüzden her GIF'in **ilk karesi
+  bir önceki turun sonucudur** (item sahnede, öncekiler envanterde) ve item'in ekranda kalma süresi
+  de bu karededir. GIF baştan oynasa bile envanter geri gitmez, açılmış item kaybolmaz.
+- GIF'in son karesi 10 dakika sürecek şekilde ayarlı, döngüye girmez.
+- Rakip katıldıktan sonra animasyonun başlaması ~2 sn sürer; tur başına ~5 sn
+  (bu sırada bot diğer komutlara cevap verir). GIF başına ~1 MB.
 - Kareler çizildikçe GIF'e yazılır, bellekte biriktirilmez.
 
-`vs.ts` içindeki `ZAMANLAMA` sabitiyle kare sayıları/süreleri, item çıktıktan sonraki bekleme ve
-GIF başına tur sayısı (`ilkGifTur`, `gifBasinaTur`) ayarlanabilir. Kare sayısını artırıp
-gecikmeyi düşürmek animasyonu akıcılaştırır ama GIF'i büyütür.
+`vs.ts` içindeki `ZAMANLAMA` sabitiyle kare sayıları/süreleri ve item çıktıktan sonraki bekleme
+ayarlanabilir. Kare sayısını artırıp gecikmeyi düşürmek animasyonu akıcılaştırır ama GIF'i büyütür.
 
 ## Güvenlik notları
 
