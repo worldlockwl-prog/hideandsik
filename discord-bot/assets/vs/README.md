@@ -112,35 +112,38 @@ tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 ## Animasyon nasıl çalışıyor
 
 Rakip katıldığı an bütün kasalar açılır, çıkacak itemler ve kazanan belli olur (ödeme de o an
-yapılır). Animasyon sadece bu hazır sonuçları gösterir. Her tur iki adım:
+yapılır). Animasyon sadece bu hazır sonuçları gösterir. Her tur üç adım:
 
 1. **"Kasa açılıyor" GIF'i** (~2 sn): iki kapalı sandık alevler içinde sallanır.
-2. **Sabit resim** (~2 sn): açılan itemler sandık alanında (nadirlik, ad, değer), envanterde kendi
-   turunun yuvasına eklenmiş, toplamlar güncellenmiş.
+2. **Sonuç (sabit resim)** (~1,6 sn): açılan itemler sandık alanında (nadirlik, ad, değer),
+   toplamlar güncellenmiş.
+3. **Envantere düşme GIF'i** (~1,2 sn): item sahneden iz bırakarak envanterdeki yuvasına uçar,
+   oturunca halka çıkar; sahnedeki ışık ve yazılar söner.
 
 ### Neden böyle
 
 Discord GIF'leri kendi sunucusunda yeniden işliyor ve nasıl oynatılacağına kendisi karar veriyor:
 istediği an baştan başlatabiliyor (pencere odağı, kaydırma, mesaj düzenlenmesi, mobil), döngüye
-sokabiliyor, uzun kareleri kesebiliyor ya da sadece ilk kareyi gösterebiliyor. "Bir kez oynayıp
-sonunda dursun" diye yapılan her GIF bu yüzden eski bir anı (eski sandık, eski item) tekrar
-gösterebiliyordu. Şimdiki düzende:
+sokabiliyor, uzun kareleri kesebiliyor ya da sadece ilk kareyi gösterebiliyor. Buna karşı:
 
-- GIF'in içinde **hiçbir item yok**. Sadece sallanan sandıkların dikişsiz, sonsuz döngüsü
-  (1,2 sn'lik döngü; son karesi ilk karesiyle birebir birleşir). Discord onu ne zaman baştan
-  başlatırsa, döndürürse ya da keserse kessin ekranda hep aynı sallanan sandık görünür.
-- Item, envanter ve toplamlar **sadece sabit resimlerde** gösterilir. Sabit resim oynamaz,
-  geri gitmez.
-- GIF'te sadece iki sandık alanı hareket eder; envanter, toplamlar, tur çubuğu ve havuz önceki
-  sabit resimle birebir aynıdır.
-- Bütün GIF kareleri aynı kısa süreli (40 ms), aşırı uzun kare yok. GIF başına ~0,7 MB.
+- **Sallanma GIF'inde hiçbir item yok.** Sallanan sandıkların dikişsiz, sonsuz döngüsü (1,2 sn;
+  son karesi ilk karesiyle birebir birleşir). Discord ne yaparsa yapsın aynı görüntü.
+- **Item önce sabit resimde** görünür; sabit resim oynamaz, geri gitmez.
+- **Düşme GIF'i kısa ve tek seferlik:** ilk karesi az önceki sabit resimle birebir aynı, içinde
+  sadece o turun itemi var, sonunda item yuvasında 8 sn sabit durur (Discord GIF'i döngüye soksa
+  bile) ve ~1,2 sn sonra sıradaki tura geçilir.
+- Bir GIF'te sadece hareket eden bölgeler değişir; geri kalan her şey önceki resimle aynıdır.
+- Aşırı uzun kare yok (en uzun kare 1 sn).
+
+Düşme efektini kapatmak istersen `vs.ts` içinde `ZAMANLAMA.envantereDusme: false` yap: item sonuç
+resminde doğrudan yuvasında görünür.
 
 Envanterde her turun numaralı bir yuvası var; sıradaki tur yuvası belirgin, son eklenen item
-nadirlik renginde parlar, önde olan oyuncunun toplamının yanında yeşil ok çıkar. Sıradaki turun
-GIF'i ve sonuç resmi önceden arka planda hazırlanır; battle sırasında bot diğer komutlara cevap
-vermeye devam eder. Animasyonda bir hata olursa bile oyunculara doğrudan sonuç ekranı gösterilir.
+nadirlik renginde parlar, önde olan oyuncunun toplamının yanında yeşil ok çıkar. Sıradaki GIF'ler
+ve resimler önceden arka planda hazırlanır; battle sırasında bot diğer komutlara cevap vermeye
+devam eder. Animasyonda bir hata olursa bile oyunculara doğrudan sonuç ekranı gösterilir.
 
-`vs.ts` içindeki `ZAMANLAMA` sabitiyle sallanma ve sonuç ekranının süreleri ayarlanabilir.
+`vs.ts` içindeki `ZAMANLAMA` sabitiyle bütün süreler ayarlanabilir.
 
 ## Güvenlik notları
 
