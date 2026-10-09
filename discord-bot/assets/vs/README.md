@@ -112,20 +112,27 @@ tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 ## Animasyon nasıl çalışıyor
 
 Rakip katıldığı an bütün kasalar açılır, çıkacak itemler ve kazanan belli olur (ödeme de o an
-yapılır). Animasyon sadece bu hazır sonuçları gösterir: **her tur ayrı bir GIF**, saniyede 25 kare.
-Her GIF bir öncekisi oynarken hazırlanır; GIF'ler bitince mesaj sabit sonuç resmine çevrilir.
+yapılır). Animasyon sadece bu hazır sonuçları gösterir. Her tur iki adım:
 
-- Discord GIF'leri istediği an baştan oynatabiliyor ya da sadece ilk karesini gösterebiliyor
-  (pencere odaktan çıkıp girince, mesaj kaydırılınca, mobilde). Bu yüzden her GIF'in **ilk karesi
-  bir önceki turun sonucudur** (item sahnede, öncekiler envanterde) ve item'in ekranda kalma süresi
-  de bu karededir. GIF baştan oynasa bile envanter geri gitmez, açılmış item kaybolmaz.
-- GIF'in son karesi 10 dakika sürecek şekilde ayarlı, döngüye girmez.
-- Rakip katıldıktan sonra animasyonun başlaması ~2 sn sürer; tur başına ~5 sn
-  (bu sırada bot diğer komutlara cevap verir). GIF başına ~1 MB.
-- Kareler çizildikçe GIF'e yazılır, bellekte biriktirilmez.
+1. **GIF**: iki sandık yukarıdan düşer, alevler içinde sallanır, patlar, item çıkar; adı ve değeri
+   belirir (~2 sn, saniyede 25 kare).
+2. **Sabit resim**: item envanterde kendi turunun yuvasına eklenir, toplamlar güncellenir.
 
-`vs.ts` içindeki `ZAMANLAMA` sabitiyle kare sayıları/süreleri ve item çıktıktan sonraki bekleme
-ayarlanabilir. Kare sayısını artırıp gecikmeyi düşürmek animasyonu akıcılaştırır ama GIF'i büyütür.
+Discord GIF'leri istediği an baştan oynatabiliyor, döngüye sokabiliyor ya da sadece ilk karesini
+gösterebiliyor (pencere odaktan çıkıp girince, mesaj kaydırılınca, mobilde). Buna karşı:
+
+- Bir GIF'te sadece **o turun** sandıkları ve itemleri var; önceki turlardan hiçbir şey yok.
+- GIF'te sadece iki sandık alanı oynar. Envanter, toplamlar, tur çubuğu ve havuz GIF'in bütün
+  karelerinde birebir aynıdır: GIF ne yaparsa yapsın bunlar değişmez.
+- Envanter ve toplamlar sadece sabit resimlerde güncellenir; sabit resim oynamaz, geri gitmez.
+- GIF'in sonunda sonuç 5 sn sabit durur; sabit resim bu sırada gelir.
+
+Envanterde her turun numaralı bir yuvası var; sıradaki tur yuvası belirgin, son eklenen item
+nadirlik renginde parlar. Bir sonraki turun GIF'i, önceki tur ekrandayken arka planda hazırlanır.
+Tur başına ~4,5 sn (5'ten fazla kasada ~4 sn), GIF başına ~1 MB. Kareler çizildikçe GIF'e yazılır,
+battle sırasında bot diğer komutlara cevap vermeye devam eder.
+
+`vs.ts` içindeki `ZAMANLAMA` sabitiyle evre süreleri ve sonucun ekranda kalma süresi ayarlanabilir.
 
 ## Güvenlik notları
 
