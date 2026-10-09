@@ -47,18 +47,14 @@ const DL = '<:DL:1381246442089349255>';
 // Değişiklikler bot yeniden başlatılınca geçerli olur.
 const VS_KLASORU = path.join(process.cwd(), 'assets', 'vs');
 
-// Animasyon zamanlaması (ms). Her tur: GIF (sandık açılır) -> sabit resim (item envantere eklenir).
+// Animasyon zamanlaması (ms). Her tur iki adım: "kasa açılıyor" GIF'i -> açılan itemlerin sabit resmi.
 const ZAMANLAMA = {
-    kareSuresi: 40,          // GIF karesi: 40 ms = saniyede 25 kare. Büyütmek GIF'i küçültür ama akıcılığı azaltır
-    dusme: 480,              // yeni sandık yukarıdan düşer
-    sallanma: 1000,          // sandık alevler içinde sallanır
-    patlama: 200,            // flaş, kapak açılır
-    cikis: 480,              // item sandıktan çıkar, adı ve değeri belirir
-    tutma: 5000,             // GIF'in sonunda sonuç bu kadar sabit durur (Discord GIF'i döngüye sokarsa diye güvence)
-    tutmaKaresi: 500,
-    yuklemePayi: 1200,       // item çıktıktan sonra sabit resme geçmeden bekleme (izleyicide GIF'in inme payı)
-    sonucuGoster: 1800,      // sabit sonuç resmi (item envantere eklenmiş) ekranda kalma süresi
-    sonucuGosterKalabalik: 1200 // 5'ten fazla kasalı battle'da aynı süre
+    kareSuresi: 40,          // GIF karesi: 40 ms = saniyede 25 kare
+    sallanmaDongusu: 1200,   // sallanan sandık GIF'inin bir döngüsü (dikişsiz, sonsuz tekrar eder)
+    sallanma: 2000,          // "kasa açılıyor" ekranının görünme süresi
+    sonucuGoster: 2200,      // açılan itemlerin sabit resmi ekranda kalma süresi
+    sallanmaKalabalik: 1600, // 5'ten fazla kasalı battle'da aynı süreler
+    sonucuGosterKalabalik: 1700
 };
 
 // ==================================================
@@ -351,14 +347,6 @@ interface CizimDurumu {
 
 // 25700 -> "25.700"
 const sayi = (n: number) => n.toLocaleString('tr-TR');
-const yumusakCikis = (t: number) => 1 - Math.pow(1 - t, 3);
-const geriSekme = (t: number) => 1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2);
-// Yere düşüp iki kere hafifçe seken hareket (0..1): ivmeli düşüş, %10 ve %3'lük sekmeler
-const zipla = (t: number) => {
-    if (t < 0.55) return Math.pow(t / 0.55, 2);
-    if (t < 0.82) return 1 - 0.1 * Math.sin((t - 0.55) / 0.27 * Math.PI);
-    return 1 - 0.03 * Math.sin((t - 0.82) / 0.18 * Math.PI);
-};
 const sinirla = (t: number) => Math.max(0, Math.min(1, t));
 // Kareden kareye aynı kalan "rastgele" sayı (kıvılcım konumları için)
 const sabitRastgele = (n: number) => {
@@ -518,10 +506,12 @@ function cizParilti(ctx: CanvasRenderingContext2D, x: number, y: number, r: numb
     ctx.restore();
 }
 
-// Sandığın arkasından yükselen alevler + uçuşan kıvılcımlar.
-// Renkler kasanın gorunum.alev ayarından gelir; `kare` değiştikçe alevler titrer.
-function cizAlevler(ctx: CanvasRenderingContext2D, cx: number, tabanY: number, genislik: number, yukseklik: number, alev: [string, string, string], kare: number, faz: number, guc: number) {
+// Sandığın arkasından yükselen alevler + uçuşan kıvılcımlar. Renkler kasanın gorunum.alev ayarından gelir.
+// dongu (0..1): animasyon döngüsündeki yer. Bütün hareketler döngü başına TAM SAYI kez tekrarlanır,
+// böylece dongu=1 ile dongu=0 birebir aynı görüntüdür ve GIF dikişsiz döner.
+function cizAlevler(ctx: CanvasRenderingContext2D, cx: number, tabanY: number, genislik: number, yukseklik: number, alev: [string, string, string], dongu: number, faz: number, guc: number) {
     if (guc <= 0) return;
+    const tur = dongu * Math.PI * 2;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const dil = 9;
@@ -530,12 +520,12 @@ function cizAlevler(ctx: CanvasRenderingContext2D, cx: number, tabanY: number, g
         for (let i = 0; i < dil; i++) {
             const o = i / (dil - 1) - 0.5;
             const merkezlik = 1 - Math.abs(o) * 1.1;
-            const titreme = 0.7 + 0.3 * Math.abs(Math.sin(kare * 0.9 + i * 1.7 + faz + katman));
+            const titreme = 0.7 + 0.3 * Math.abs(Math.sin(tur * 2 + i * 1.7 + faz + katman));
             const h = yukseklik * (0.55 + 0.45 * guc) * Math.max(0.35, merkezlik) * titreme * olcek;
             if (h < 4) continue;
             const fw = (genislik / dil) * 2.1 * olcek + 6;
             const bx = cx + o * genislik * 0.95;
-            const salinim = Math.sin(kare * 0.7 + i * 2.3 + faz) * fw * 0.35;
+            const salinim = Math.sin(tur * 2 + i * 2.3 + faz) * fw * 0.35;
             const g = ctx.createLinearGradient(0, tabanY, 0, tabanY - h);
             g.addColorStop(0, renk + 'ff');
             g.addColorStop(0.55, renk + 'aa');
@@ -550,16 +540,16 @@ function cizAlevler(ctx: CanvasRenderingContext2D, cx: number, tabanY: number, g
         }
     });
 
-    // Kıvılcımlar: her biri kendi hızında yukarı süzülüp sönüyor
+    // Kıvılcımlar: her biri döngü başına bir kez yukarı süzülüp söner (farklı yerden başlayarak)
     const yol = yukseklik * 1.5;
     for (let i = 0; i < 16; i++) {
         const r1 = sabitRastgele(i + faz * 10);
         const r2 = sabitRastgele(i * 3.7 + faz * 20);
-        const ilerleme = ((kare * (6 + r2 * 6) + r2 * yol) % yol);
+        const ilerleme = ((dongu + r2) % 1) * yol;
         ctx.globalAlpha = Math.max(0, 1 - ilerleme / yol) * guc;
         ctx.fillStyle = i % 2 === 0 ? alev[0] : alev[1];
         ctx.beginPath();
-        ctx.arc(cx + (r1 - 0.5) * genislik * 1.15 + Math.sin(kare * 0.5 + i) * 6, tabanY - ilerleme, 1.5 + r1 * 2.5, 0, Math.PI * 2);
+        ctx.arc(cx + (r1 - 0.5) * genislik * 1.15 + Math.sin(tur + i) * 6, tabanY - ilerleme, 1.5 + r1 * 2.5, 0, Math.PI * 2);
         ctx.fill();
     }
     ctx.restore();
@@ -1011,22 +1001,19 @@ function envanterYuvasi(n: number, index: 0 | 1, k: number): { x: number; y: num
     return { x: basX + (k % 5) * (w + 8), y: B_PANEL_Y + ENVANTER_Y + Math.floor(k / 5) * (h + 6), w, h };
 }
 
-// Sandık alanının tek bir anı
-//   dus   : yeni sandık yukarıdan düşüp yere oturur
-//   salla : sandık alevler içinde giderek şiddetlenen şekilde sallanır
-//   patla : beyaz parlama, kapak açılır
-//   cik   : item sandıktan fırlar, sandık kaybolur, item'in adı ve değeri belirir
-//   sonuc : item, adı ve değeri (cik evresinin son haliyle birebir aynı)
+// Sandık alanının içeriği
+//   salla : kapalı sandık alevler içinde sallanır (sonsuz döngü; içinde item YOK)
+//   sonuc : sandık açıldı, item, nadirliği, adı ve değeri (sabit resim)
 interface SahneDurumu {
     kasa: Kasa;
-    item: KasaItemi;
-    evre: 'dus' | 'salla' | 'patla' | 'cik' | 'sonuc';
-    t: number;     // evre içindeki ilerleme 0..1
-    zaman: number; // tur başından beri geçen süre (sn): alev titremesi, sallanma
-    faz: number;   // iki oyuncunun sandığı aynı anda aynı yöne sallanmasın
+    item: KasaItemi | null; // salla evresinde null: GIF'te hiçbir item bulunmaz
+    evre: 'salla' | 'sonuc';
+    dongu: number;          // salla: döngüdeki yer 0..1 (1 ile 0 aynı kare)
+    faz: number;            // iki oyuncunun sandığı aynı anda aynı yöne sallanmasın
 }
 
-const sonucSahnesi = (kasa: Kasa, item: KasaItemi): SahneDurumu => ({ kasa, item, evre: 'sonuc', t: 1, zaman: 0, faz: 0 });
+const sallanmaSahnesi = (kasa: Kasa, dongu: number, faz: number): SahneDurumu => ({ kasa, item: null, evre: 'salla', dongu, faz });
+const sonucSahnesi = (kasa: Kasa, item: KasaItemi): SahneDurumu => ({ kasa, item, evre: 'sonuc', dongu: 0, faz: 0 });
 
 function cizSahneKutusu(ctx: CanvasRenderingContext2D, s: SahneDurumu | undefined, x: number, y: number, w: number, h: number) {
     const cx = x + w / 2;
@@ -1041,13 +1028,8 @@ function cizSahneKutusu(ctx: CanvasRenderingContext2D, s: SahneDurumu | undefine
     }
 
     const G = s.kasa.gorunum;
-    const boyut = 150;
-    const kutuY = y + h * 0.66;
-    const tabanY = kutuY + boyut * 0.24;
-    const kare = s.zaman * 10; // alev/sallanma formülleri 100 ms'lik birimle yazıldı
-    const baslik = (metin: string, alfa: number) => {
+    const baslik = (metin: string) => {
         ctx.save();
-        ctx.globalAlpha = alfa;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.font = 'bold 22px Arial';
@@ -1059,142 +1041,70 @@ function cizSahneKutusu(ctx: CanvasRenderingContext2D, s: SahneDurumu | undefine
         ctx.restore();
     };
 
-    if (s.evre === 'dus' || s.evre === 'salla') {
-        const t = s.t;
-        const sallaniyor = s.evre === 'salla';
-        const isik = sallaniyor ? 0.45 + 0.55 * t : 0.45 * sinirla((t - 0.6) / 0.4);
+    if (s.evre === 'salla' || !s.item) {
+        // Kapalı sandık alevler içinde sallanıyor. Bütün hareketler döngü başına tam sayı kez:
+        // döngünün sonu başıyla birleşir, GIF ne zaman baştan başlarsa başlasın aynı görüntü.
+        const boyut = 150;
+        const kutuY = y + h * 0.66;
+        const tabanY = kutuY + boyut * 0.24;
+        const tur = s.dongu * Math.PI * 2;
+        const nabiz = 0.82 + 0.18 * Math.sin(tur + s.faz); // alevler hafifçe büyüyüp küçülür
 
         const glow = ctx.createRadialGradient(cx, kutuY, 10, cx, kutuY, w * 0.55);
-        glow.addColorStop(0, G.alev[1] + (sallaniyor && t > 0.5 ? '66' : '33'));
+        glow.addColorStop(0, G.alev[1] + '55');
         glow.addColorStop(1, G.alev[1] + '00');
-        ctx.globalAlpha = sallaniyor ? 1 : sinirla(t * 1.5);
         ctx.fillStyle = glow;
         ctx.fillRect(x, y, w, h);
-        ctx.globalAlpha = 1;
 
-        if (sallaniyor) {
-            // Arkadaki büyük alev, sallanan sandık, köşelerdeki küçük alevler
-            cizAlevler(ctx, cx, tabanY, boyut * 1.5, Math.min(tabanY - y - 8, boyut * (1.1 + 0.6 * t)), G.alev, kare, s.faz, isik);
-            const genlik = 0.05 + 0.16 * t;
-            const aci = Math.sin(kare * 1.9 + s.faz) * genlik;
-            const kayma = Math.sin(kare * 2.7 + s.faz) * 5 * t;
-            const ziplama = -Math.abs(Math.sin(kare * 1.4 + s.faz)) * 9 * t;
-            cizKutu(ctx, s.kasa, cx + kayma, kutuY + ziplama, boyut, aci, false, G.alev[1], 0.15 + 0.85 * t);
-            for (const yon of [-1, 1]) {
-                cizAlevler(ctx, cx + kayma + yon * boyut * 0.47, tabanY + 4, boyut * 0.32, boyut * (0.35 + 0.3 * t), G.alev, kare + yon * 2, s.faz + yon, 0.6 + 0.4 * t);
-            }
-            baslik('KASA AÇILIYOR' + '.'.repeat(1 + Math.floor(kare / 3) % 3), 1);
-        } else {
-            // Sandık yukarıdan düşer, yere iki kere sekerek oturur, inişte toz halkası
-            const baslaY = y - boyut * 0.7;
-            if (t > 0.6) cizAlevler(ctx, cx, tabanY, boyut * 1.5, boyut * 0.9, G.alev, kare, s.faz, isik);
-            cizKutu(ctx, s.kasa, cx, baslaY + (kutuY - baslaY) * zipla(t), boyut, 0, false, G.alev[1], 0);
-            if (t > 0.55) {
-                const r = sinirla((t - 0.55) / 0.45);
-                ctx.save();
-                ctx.globalAlpha = 1 - r;
-                ctx.strokeStyle = G.alev[0];
-                ctx.lineWidth = 4;
-                ctx.beginPath();
-                ctx.ellipse(cx, tabanY + 4, boyut * (0.55 + 0.6 * r), 8 + 14 * r, 0, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.fillStyle = 'rgba(200, 200, 210, 0.8)';
-                for (let i = 0; i < 10; i++) {
-                    const yon = i % 2 === 0 ? -1 : 1;
-                    const uzak = boyut * (0.4 + 0.5 * r) * (0.6 + sabitRastgele(i) * 0.6);
-                    ctx.beginPath();
-                    ctx.arc(cx + yon * uzak, tabanY - r * 30 * sabitRastgele(i + 5), 3 + 4 * (1 - r), 0, Math.PI * 2);
-                    ctx.fill();
-                }
-                ctx.restore();
-            }
-            baslik('KASA AÇILIYOR', sinirla(t * 2));
+        cizAlevler(ctx, cx, tabanY, boyut * 1.5, Math.min(tabanY - y - 8, boyut * (1.25 + 0.35 * nabiz)), G.alev, s.dongu, s.faz, 0.75 + 0.25 * nabiz);
+        const aci = Math.sin(tur * 4 + s.faz) * 0.17;
+        const kayma = Math.sin(tur * 5 + s.faz) * 4;
+        const ziplama = -Math.abs(Math.sin(tur * 2.5 + s.faz)) * 7; // |sin| yarım periyotta tekrarlar: 2.5 tam döngü
+        cizKutu(ctx, s.kasa, cx + kayma, kutuY + ziplama, boyut, aci, false, G.alev[1], 0.7 + 0.3 * nabiz);
+        for (const yon of [-1, 1]) {
+            cizAlevler(ctx, cx + kayma + yon * boyut * 0.47, tabanY + 4, boyut * 0.32, boyut * 0.6, G.alev, (s.dongu + (yon + 1) * 0.25) % 1, s.faz + yon, 0.9);
         }
+        baslik('KASA AÇILIYOR' + '.'.repeat(1 + Math.floor(s.dongu * 3) % 3));
         ctx.restore();
         return;
     }
 
-    // --- patla / cik / sonuc ---
+    // --- sonuc: item, nadirlik etiketi, adı ve değeri ---
     const item = s.item;
-    const patlama = s.evre === 'patla' ? s.t : 1;            // 0..1 flaş
-    const cikis = s.evre === 'cik' ? s.t : (s.evre === 'sonuc' ? 1 : 0);
-    const ce = yumusakCikis(cikis);
     const itemY = y + h * 0.37;
     const guc = [0.15, 0.3, 0.45, 0.7, 1][item.seviye];
-
-    // Nadirlik renginde arka ışık ve hüzmeler: item çıktıkça belirir
-    const isikAlfa = s.evre === 'patla' ? patlama * 0.6 : 0.6 + 0.4 * ce;
     const glow = ctx.createRadialGradient(cx, itemY, 10, cx, itemY, w * 0.6);
     glow.addColorStop(0, item.renk + (item.seviye >= 3 ? '88' : '44'));
     glow.addColorStop(1, item.renk + '00');
-    ctx.globalAlpha = isikAlfa;
     ctx.fillStyle = glow;
     ctx.fillRect(x, y, w, h);
-    ctx.globalAlpha = 1;
-    cizIsinlar(ctx, cx, itemY, w * 0.62, item.renk, guc * isikAlfa, 0);
-
-    // Açılan sandık: item çıkarken aşağı kayıp kaybolur
-    const sandikAlfa = 1 - ce;
-    if (sandikAlfa > 0.01) {
-        ctx.save();
-        ctx.globalAlpha = sandikAlfa;
-        cizAlevler(ctx, cx, tabanY + 40 * ce, boyut * 1.35, boyut * 1.3, G.alev, kare, s.faz, (s.evre === 'patla' ? 1 : 0.6) * sandikAlfa);
-        cizKutu(ctx, s.kasa, cx, kutuY + 40 * ce, boyut, 0, s.evre !== 'patla' || patlama > 0.3, item.renk, 1);
-        ctx.restore();
+    cizIsinlar(ctx, cx, itemY, w * 0.62, item.renk, guc, 0);
+    cizItemGorseli(ctx, item, cx, itemY, 120, true);
+    if (item.seviye >= 3) {
+        cizParilti(ctx, cx - 105, itemY - 40, 12, item.renk);
+        cizParilti(ctx, cx + 110, itemY - 12, 9, '#ffffff');
+        cizParilti(ctx, cx + 85, itemY + 48, 7, item.renk);
+        cizParilti(ctx, cx - 90, itemY + 42, 8, '#ffffff');
     }
+    const nadirlik = NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR');
+    ctx.font = 'bold 18px Arial';
+    cizEtiket(ctx, nadirlik, x + 14 + (ctx.measureText(nadirlik).width + 40) / 2, y + 26, item.renk, 18);
 
-    // Item: sandığın ağzından fırlayıp yerine oturur, hafif büyüyüp yerleşir
-    if (s.evre !== 'patla' || patlama >= 1) {
-        const agizY = kutuY - boyut * 0.24;
-        const iy = agizY + (itemY - agizY) * ce;
-        cizItemGorseli(ctx, item, cx, iy, 120 * (0.3 + 0.7 * geriSekme(cikis)), true);
-    }
-
-    if (s.evre === 'patla') {
-        // Beyaz parlama + genişleyen halka
-        ctx.fillStyle = `rgba(255, 255, 255, ${(1 - patlama) * 0.85})`;
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = G.alev[0];
-        ctx.globalAlpha = 1 - patlama * 0.8;
-        ctx.lineWidth = 10 * (1 - patlama) + 2;
-        ctx.beginPath();
-        ctx.arc(cx, kutuY - boyut * 0.24, 30 + patlama * w * 0.5, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-    }
-
-    // Nadirlik etiketi, item adı ve değeri: item yerine otururken belirir
-    const yaziAlfa = sinirla((cikis - 0.45) / 0.55);
-    if (yaziAlfa > 0) {
-        ctx.save();
-        ctx.globalAlpha = yaziAlfa;
-        if (item.seviye >= 3) {
-            cizParilti(ctx, cx - 105, itemY - 40, 12, item.renk);
-            cizParilti(ctx, cx + 110, itemY - 12, 9, '#ffffff');
-            cizParilti(ctx, cx + 85, itemY + 48, 7, item.renk);
-            cizParilti(ctx, cx - 90, itemY + 42, 8, '#ffffff');
-        }
-        const nadirlik = NADIRLIKLER[item.seviye].ad.toLocaleUpperCase('tr-TR');
-        ctx.font = 'bold 18px Arial';
-        cizEtiket(ctx, nadirlik, x + 14 + (ctx.measureText(nadirlik).width + 40) / 2, y + 26, item.renk, 18);
-
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-        sigdirFont(ctx, item.ad, w - 30, 24, 14);
-        ctx.strokeText(item.ad, cx, y + h - 56);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(item.ad, cx, y + h - 56);
-        const deger = `+${sayi(item.deger)} DL`;
-        sigdirFont(ctx, deger, w - 30, 30, 16);
-        ctx.strokeText(deger, cx, y + h - 22);
-        ctx.fillStyle = item.renk;
-        ctx.shadowColor = item.renk;
-        ctx.shadowBlur = 14;
-        ctx.fillText(deger, cx, y + h - 22);
-        ctx.restore();
-    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    sigdirFont(ctx, item.ad, w - 30, 24, 14);
+    ctx.strokeText(item.ad, cx, y + h - 56);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(item.ad, cx, y + h - 56);
+    const deger = `+${sayi(item.deger)} DL`;
+    sigdirFont(ctx, deger, w - 30, 30, 16);
+    ctx.strokeText(deger, cx, y + h - 22);
+    ctx.fillStyle = item.renk;
+    ctx.shadowColor = item.renk;
+    ctx.shadowBlur = 14;
+    ctx.fillText(deger, cx, y + h - 22);
     ctx.restore();
 }
 
@@ -1415,60 +1325,40 @@ function resimOlustur(d: CizimDurumu, olcek: number = 1): AttachmentBuilder {
     return new AttachmentBuilder(canvas.toBuffer('image/jpeg', { quality: 0.92 }), { name: `vs_${Date.now()}.jpg` });
 }
 
+// Aynısı, ama JPEG sıkıştırma arka plan iş parçacığında yapılır (battle sırasında bot takılmasın)
+function resimHazirla(d: CizimDurumu, olcek: number = 1): Promise<AttachmentBuilder> {
+    const canvas = createCanvas(Math.round(GENISLIK * olcek), Math.round(YUKSEKLIK * olcek));
+    const ctx = canvas.getContext('2d');
+    ctx.scale(olcek, olcek);
+    ekraniCiz(ctx, d);
+    return new Promise((resolve, reject) => {
+        canvas.toBuffer((err, buf) => {
+            if (err) reject(err);
+            else resolve(new AttachmentBuilder(buf, { name: `vs_${Date.now()}.jpg` }));
+        }, 'image/jpeg', { quality: 0.92 });
+    });
+}
+
 // Diğer komutlar beklemesin diye uzun işlerin arasında olay döngüsüne nefes aldır
 const nefesAl = () => new Promise<void>(resolve => setImmediate(resolve));
 
-// GIF karesinin süresi en fazla ~655 sn olabilir; son kareye bunu veriyoruz (döngü olmasın)
-const DONGUYU_ENGELLE = 600_000;
-
 // ==================================================
-// TUR ANİMASYONU (GIF)
+// "KASA AÇILIYOR" ANİMASYONU (GIF)
 // ==================================================
-// Discord GIF'lerin oynatılmasını kontrol etmemize izin vermiyor: istediği an baştan oynatabiliyor,
-// döngüye sokabiliyor ya da sadece ilk karesini gösterebiliyor. Bu yüzden:
-//   * Bir GIF sadece TEK turu gösterir: o turun sandıkları ve o turun itemleri. Eski bir item asla yok.
-//   * GIF'te sadece iki sandık alanı değişir. Envanter, toplamlar, tur çubuğu, havuz bütün karelerde
-//     birebir aynıdır: GIF ne yaparsa yapsın bunlar oynamaz.
-//   * Envanter ve toplamlar sadece GIF'ten sonra gelen SABİT resimde güncellenir (sabit resim oynamaz).
-//   * GIF'in sonunda sonuç birkaç saniye sabit durur; sabit resim bu sırada gelir.
-interface SahneKaresi {
-    sahneler: [SahneDurumu, SahneDurumu];
-    gecikme: number; // ms
-}
-
-function turKareleri(kasa: Kasa, itemler: [KasaItemi, KasaItemi], fazlar: [number, number]): SahneKaresi[] {
-    const kareler: SahneKaresi[] = [];
-    const ks = ZAMANLAMA.kareSuresi;
-    let gecen = 0;
-    const evre = (ad: SahneDurumu['evre'], sure: number) => {
-        const adet = Math.max(2, Math.round(sure / ks));
-        for (let i = 0; i < adet; i++) {
-            const t = i / (adet - 1);
-            kareler.push({
-                gecikme: ks,
-                sahneler: [0, 1].map(o => ({ kasa, item: itemler[o], evre: ad, t, zaman: gecen / 1000, faz: fazlar[o] })) as [SahneDurumu, SahneDurumu]
-            });
-            gecen += ks;
-        }
-    };
-    evre('dus', ZAMANLAMA.dusme);
-    evre('salla', ZAMANLAMA.sallanma);
-    evre('patla', ZAMANLAMA.patlama);
-    evre('cik', ZAMANLAMA.cikis);
-    // Son kare: sonuç. Sonradan gelen sabit resimdeki sandık alanıyla birebir aynı.
-    kareler.push({ gecikme: ZAMANLAMA.tutma, sahneler: [sonucSahnesi(kasa, itemler[0]), sonucSahnesi(kasa, itemler[1])] });
-    return kareler;
-}
-
-// Item'in tamamen ortaya çıkmasına kadar geçen süre (son karenin başlangıcı)
-const animasyonSuresi = (kareler: SahneKaresi[]) => kareler.slice(0, -1).reduce((t, k) => t + k.gecikme, 0);
-
-// Tur GIF'i: zemin (sandık alanları boş ekran) bir kez çizilir; her karede sadece iki sandık alanı
-// yeniden çizilip GIF'e yazılır. Değişmeyen pikseller şeffaf kalır, dosya küçük olur.
-async function turGifi(zemin: CizimDurumu, kareler: SahneKaresi[]): Promise<AttachmentBuilder> {
+// Discord GIF'lerin nasıl oynatılacağını bize bırakmıyor: GIF'i yeniden işleyip kareleri/süreleri
+// değiştirebiliyor, istediği an baştan başlatabiliyor, döngüye sokabiliyor ya da sadece ilk karesini
+// gösterebiliyor. "Bir kez oynayıp sonunda dursun" diye tasarlanan her GIF bu yüzden eski bir anı
+// tekrar gösterebilir. Bu yüzden:
+//   * GIF sadece sallanan kapalı sandıkların SONSUZ ve dikişsiz döngüsü. İçinde hiçbir item yok,
+//     başı-sonu yok: Discord ne yaparsa yapsın ekranda hep aynı sallanan sandık görünür.
+//   * Item, envanter ve toplamlar sadece SABİT resimlerde gösterilir (sabit resim oynamaz).
+//   * GIF'te sadece iki sandık alanı değişir; geri kalan her şey önceki sabit resimle birebir aynı.
+//   * Bütün kareler aynı kısa süreli (40 ms); aşırı uzun kare yok.
+async function sallanmaGifi(zemin: CizimDurumu, kasa: Kasa, fazlar: [number, number]): Promise<AttachmentBuilder> {
     const S = GIF_OLCEK;
     const W = Math.round(GENISLIK * S);
     const H = Math.round(YUKSEKLIK * S);
+    const kareSayisi = Math.max(2, Math.round(ZAMANLAMA.sallanmaDongusu / ZAMANLAMA.kareSuresi));
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
     ctx.save();
@@ -1483,8 +1373,8 @@ async function turGifi(zemin: CizimDurumu, kareler: SahneKaresi[]): Promise<Atta
         const x0 = Math.floor(a.x * S), y0 = Math.floor(a.y * S);
         return { x: x0, y: y0, w: Math.ceil((a.x + a.w) * S) - x0, h: Math.ceil((a.y + a.h) * S) - y0 };
     });
-    // Karenin iki sandık alanını çizer ve piksellerini döner (RGBA -> tek sayı, little-endian: R en düşük bayt)
-    const sahneleriCiz = (k: SahneKaresi): Uint32Array[] => alanlar.map((b, o) => {
+    // Döngüdeki i. kare (i = kareSayisi, i = 0 ile aynı görüntü): iki sandık alanını çizer, piksellerini döner
+    const sahneleriCiz = (i: number): Uint32Array[] => alanlar.map((b, o) => {
         ctx.putImageData(zeminVeri, 0, 0, b.x, b.y, b.w, b.h);
         ctx.save();
         ctx.beginPath();
@@ -1492,23 +1382,19 @@ async function turGifi(zemin: CizimDurumu, kareler: SahneKaresi[]): Promise<Atta
         ctx.clip();
         ctx.scale(S, S);
         const a = sahneAlani(o as 0 | 1);
-        cizSahneKutusu(ctx, k.sahneler[o], a.x, a.y, a.w, a.h);
+        cizSahneKutusu(ctx, sallanmaSahnesi(kasa, i / kareSayisi, fazlar[o]), a.x, a.y, a.w, a.h);
         ctx.restore();
         const v = ctx.getImageData(b.x, b.y, b.w, b.h).data;
-        return new Uint32Array(v.buffer, v.byteOffset, v.byteLength >> 2);
+        return new Uint32Array(v.buffer, v.byteOffset, v.byteLength >> 2); // RGBA -> tek sayı (little-endian: R en düşük bayt)
     });
 
-    // --- Ortak palet (255 renk + 1 şeffaf): zemin + sallanma, patlama ve sonuç anlarından örnek ---
-    const ornekKareler = [
-        kareler.find(k => k.sahneler[0].evre === 'salla' && k.sahneler[0].t >= 0.6),
-        kareler.find(k => k.sahneler[0].evre === 'patla' && k.sahneler[0].t >= 0.5),
-        kareler[kareler.length - 1]
-    ].filter((k): k is SahneKaresi => !!k);
+    // --- Ortak palet (255 renk + 1 şeffaf): zemin + döngünün birkaç anı ---
     const ornek: number[] = [];
     const zeminPiksel = new Uint32Array(zeminVeri.data.buffer, zeminVeri.data.byteOffset, zeminVeri.data.byteLength >> 2);
-    for (let p = 0; p < zeminPiksel.length; p += 5) ornek.push(zeminPiksel[p]);
-    for (const k of ornekKareler) {
-        for (const px of sahneleriCiz(k)) for (let p = 0; p < px.length; p += 2) ornek.push(px[p]);
+    // ~150 bin örnek piksel yeterli; fazlası paleti iyileştirmeden hesabı uzatıyor (bot takılmasın)
+    for (let p = 0; p < zeminPiksel.length; p += 8) ornek.push(zeminPiksel[p]);
+    for (const i of [0, Math.floor(kareSayisi / 3), Math.floor(kareSayisi * 2 / 3)]) {
+        for (const px of sahneleriCiz(i)) for (let p = 0; p < px.length; p += 4) ornek.push(px[p]);
         await nefesAl();
     }
     const ornekRgba = new Uint8Array(ornek.length * 4);
@@ -1538,20 +1424,18 @@ async function turGifi(zemin: CizimDurumu, kareler: SahneKaresi[]): Promise<Atta
         return v;
     };
 
-    // --- Kareleri yaz ---
+    // --- Kareleri yaz (repeat: 0 = sonsuz döngü) ---
     const gif = gifenc.GIFEncoder();
     let onceki: Uint32Array[] = [];
-    for (let i = 0; i < kareler.length; i++) {
-        const piksel = sahneleriCiz(kareler[i]);
-        // Son kare (sonuç) kısa süreli yazılır; ardından aşağıdaki boş "bekleme" kareleri gelir
-        const gecikme = i === kareler.length - 1 ? ZAMANLAMA.tutmaKaresi : kareler[i].gecikme;
+    for (let i = 0; i < kareSayisi; i++) {
+        const piksel = sahneleriCiz(i);
         if (i === 0) {
             // İlk kare: ekranın tamamı
             const v = ctx.getImageData(0, 0, W, H).data;
             const tum = new Uint32Array(v.buffer, v.byteOffset, v.byteLength >> 2);
             const indeks = new Uint8Array(W * H);
             for (let p = 0; p < tum.length; p++) indeks[p] = enYakin(tum[p]);
-            gif.writeFrame(indeks, W, H, { palette: tamPalet, delay: gecikme, repeat: -1 });
+            gif.writeFrame(indeks, W, H, { palette: tamPalet, delay: ZAMANLAMA.kareSuresi, repeat: 0 });
         } else {
             // Sonraki kareler: sadece sandık alanlarında, bir önceki kareden farklı pikseller
             const indeks = new Uint8Array(W * H).fill(seffaf);
@@ -1565,17 +1449,10 @@ async function turGifi(zemin: CizimDurumu, kareler: SahneKaresi[]): Promise<Atta
                     }
                 }
             });
-            gif.writeFrame(indeks, W, H, { delay: gecikme, transparent: true, transparentIndex: seffaf, dispose: 1 });
+            gif.writeFrame(indeks, W, H, { delay: ZAMANLAMA.kareSuresi, transparent: true, transparentIndex: seffaf, dispose: 1 });
         }
         onceki = piksel;
         await nefesAl();
-    }
-    // Sonuç ekranda sabit kalsın: tamamen şeffaf (hiçbir şeyi değiştirmeyen) kareler. Discord son
-    // karenin uzun süresini yok sayıp döngüye soksa bile sonuç en az ZAMANLAMA.tutma kadar durur.
-    const bos = new Uint8Array(W * H).fill(seffaf);
-    const bekleme = Math.max(1, Math.round(ZAMANLAMA.tutma / ZAMANLAMA.tutmaKaresi) - 1);
-    for (let i = 0; i < bekleme; i++) {
-        gif.writeFrame(bos, W, H, { delay: i === bekleme - 1 ? DONGUYU_ENGELLE : ZAMANLAMA.tutmaKaresi, transparent: true, transparentIndex: seffaf, dispose: 1 });
     }
     gif.finish();
     return new AttachmentBuilder(Buffer.from(gif.bytes()), { name: `vs_${Date.now()}.gif` });
@@ -1934,10 +1811,12 @@ export class VsCommand implements Command {
 
             // ==================================================
             // 4) ANİMASYON: sonuçlar zaten belli, animasyon sadece onları gösterir. Her tur iki adım:
-            //    a) GIF: iki sandık düşer, sallanır, açılır, item çıkar. Sadece sandık alanları oynar;
-            //       envanter ve toplamlar GIF boyunca hiç değişmez, GIF'te önceki turlardan hiçbir şey yok.
-            //    b) Sabit resim: item envanterdeki yuvasına eklenmiş, toplamlar güncellenmiş.
-            //    Discord GIF'i baştan oynatsa/döngüye soksa bile envanter geri gitmez, eski item görünmez.
+            //    a) "Kasa açılıyor" GIF'i: iki kapalı sandık alevler içinde sallanır. Dikişsiz sonsuz
+            //       döngü, içinde hiçbir item yok; envanter ve toplamlar önceki sabit resimle aynı.
+            //    b) Sabit resim: açılan itemler sandık alanında, envanterde yuvalarına eklenmiş,
+            //       toplamlar güncellenmiş.
+            //    Discord GIF'i ne zaman baştan başlatırsa/döndürürse/keserse kessin ekranda sadece sallanan
+            //    sandık olur: hiçbir item iki kere görünmez, envanter hiç geri gitmez.
             // ==================================================
             const [rakipAvatar] = await Promise.all([
                 avatarYukle(rakip),
@@ -1947,6 +1826,7 @@ export class VsCommand implements Command {
             const temelOyuncular: [OyuncuGorunumu, OyuncuGorunumu] = [kurucu, rakipGorunumu];
             const rakipId = rakip.id;
             const n = kasalar.length;
+            const sallanma = n > 5 ? ZAMANLAMA.sallanmaKalabalik : ZAMANLAMA.sallanma;
             const sonucuGoster = n > 5 ? ZAMANLAMA.sonucuGosterKalabalik : ZAMANLAMA.sonucuGoster;
             // İki oyuncunun sandığı aynı anda aynı yöne sallanmasın
             const fazlar = kasalar.map(() => [Math.random() * 6, Math.random() * 6] as [number, number]);
@@ -1997,12 +1877,11 @@ export class VsCommand implements Command {
                 return true;
             };
 
-            // Sıradaki turun GIF'i, bir önceki tur ekrandayken arka planda hazırlanır
+            // Sıradaki turun GIF'i, bir önceki turun sonucu ekrandayken arka planda hazırlanır
             const gifHazirla = (tur: number) => {
-                const kareler = turKareleri(kasalar[tur], sonuclar[tur], fazlar[tur]);
-                const gif = turGifi(ekranDurumu(tur, tur), kareler);
+                const gif = sallanmaGifi(ekranDurumu(tur, tur), kasalar[tur], fazlar[tur]);
                 gif.catch(() => { }); // beklenmeden önce hata verirse süreç çökmesin; await edildiğinde yine fırlar
-                return { gif, sure: animasyonSuresi(kareler) };
+                return gif;
             };
             const baslikMetni = `## ⚔️ <@${userId}> vs <@${rakipId}>`;
 
@@ -2010,18 +1889,20 @@ export class VsCommand implements Command {
                 let siradaki = gifHazirla(0);
                 for (let tur = 0; tur < n; tur++) {
                     const kasa = kasalar[tur];
-                    const { gif, sure } = siradaki;
-                    // a) Sandıklar açılıyor
+                    // a) Sandıklar sallanıyor (GIF)
                     const acilisMetni = `${baslikMetni}\n🎲 **Tur ${tur + 1}/${n}** • ${kasa.emoji} ${kasa.ad} açılıyor...`;
-                    if (!await goster(await gif, acilisMetni, sure + ZAMANLAMA.yuklemePayi)) break;
-                    if (tur + 1 < n) siradaki = gifHazirla(tur + 1);
+                    if (!await goster(await siradaki, acilisMetni, sallanma)) break;
 
-                    // b) Itemler envantere eklendi
+                    // b) Sandıklar açıldı: itemler sahnede ve envanterde (sabit resim). Resim ve sıradaki
+                    //    turun GIF'i, sandıklar sallanırken arka planda hazırlanır.
                     const sonDurum = ekranDurumu(tur, tur + 1);
                     sonDurum.sahneler = [sonucSahnesi(kasa, sonuclar[tur][0]), sonucSahnesi(kasa, sonuclar[tur][1])];
+                    const sonucResmi = resimHazirla(sonDurum, GIF_OLCEK);
+                    sonucResmi.catch(() => { });
+                    if (tur + 1 < n) siradaki = gifHazirla(tur + 1);
                     const [i0, i1] = sonuclar[tur];
                     const sonucMetni = `${baslikMetni}\n✅ **Tur ${tur + 1}/${n}** • <@${userId}> ${i0.ad} **+${sayi(i0.deger)}** ${DL} • <@${rakipId}> ${i1.ad} **+${sayi(i1.deger)}** ${DL}`;
-                    if (!await goster(resimOlustur(sonDurum, GIF_OLCEK), sonucMetni, sonucuGoster)) break;
+                    if (!await goster(await sonucResmi, sonucMetni, sonucuGoster)) break;
                 }
             } catch (err) {
                 // Ödeme yapıldı; animasyon hata verse bile oyuncular sonucu görsün
@@ -2039,7 +1920,8 @@ export class VsCommand implements Command {
                     : `**Giriş Ücreti:** ${ucret} ${DL} (kişi başı)  •  **Havuz:** ${havuz} ${DL}  •  <@${kazananId}> **+${havuz}** ${DL} (net ${havuz - ucret >= 0 ? '+' : ''}${havuz - ucret})`
             ].join('\n');
 
-            await goster(sonucEkrani, bitisMetni, 0);
+            const sonucGorseli = await resimHazirla(sonucEkrani).catch(() => sonucEkrani); // olmazsa senkron çiz
+            await goster(sonucGorseli, bitisMetni, 0);
         } catch (err) {
             // Beklenmeyen hata: ödeme yapılmadıysa alınan giriş ücretlerini geri ver
             if (!odemeYapildi) {

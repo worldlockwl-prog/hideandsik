@@ -114,25 +114,33 @@ tasarımdan efsanevi şanslarını azalt ve oluşturucuyu tekrar çalıştır.
 Rakip katıldığı an bütün kasalar açılır, çıkacak itemler ve kazanan belli olur (ödeme de o an
 yapılır). Animasyon sadece bu hazır sonuçları gösterir. Her tur iki adım:
 
-1. **GIF**: iki sandık yukarıdan düşer, alevler içinde sallanır, patlar, item çıkar; adı ve değeri
-   belirir (~2 sn, saniyede 25 kare).
-2. **Sabit resim**: item envanterde kendi turunun yuvasına eklenir, toplamlar güncellenir.
+1. **"Kasa açılıyor" GIF'i** (~2 sn): iki kapalı sandık alevler içinde sallanır.
+2. **Sabit resim** (~2 sn): açılan itemler sandık alanında (nadirlik, ad, değer), envanterde kendi
+   turunun yuvasına eklenmiş, toplamlar güncellenmiş.
 
-Discord GIF'leri istediği an baştan oynatabiliyor, döngüye sokabiliyor ya da sadece ilk karesini
-gösterebiliyor (pencere odaktan çıkıp girince, mesaj kaydırılınca, mobilde). Buna karşı:
+### Neden böyle
 
-- Bir GIF'te sadece **o turun** sandıkları ve itemleri var; önceki turlardan hiçbir şey yok.
-- GIF'te sadece iki sandık alanı oynar. Envanter, toplamlar, tur çubuğu ve havuz GIF'in bütün
-  karelerinde birebir aynıdır: GIF ne yaparsa yapsın bunlar değişmez.
-- Envanter ve toplamlar sadece sabit resimlerde güncellenir; sabit resim oynamaz, geri gitmez.
-- GIF'in sonunda sonuç 5 sn sabit durur; sabit resim bu sırada gelir.
+Discord GIF'leri kendi sunucusunda yeniden işliyor ve nasıl oynatılacağına kendisi karar veriyor:
+istediği an baştan başlatabiliyor (pencere odağı, kaydırma, mesaj düzenlenmesi, mobil), döngüye
+sokabiliyor, uzun kareleri kesebiliyor ya da sadece ilk kareyi gösterebiliyor. "Bir kez oynayıp
+sonunda dursun" diye yapılan her GIF bu yüzden eski bir anı (eski sandık, eski item) tekrar
+gösterebiliyordu. Şimdiki düzende:
+
+- GIF'in içinde **hiçbir item yok**. Sadece sallanan sandıkların dikişsiz, sonsuz döngüsü
+  (1,2 sn'lik döngü; son karesi ilk karesiyle birebir birleşir). Discord onu ne zaman baştan
+  başlatırsa, döndürürse ya da keserse kessin ekranda hep aynı sallanan sandık görünür.
+- Item, envanter ve toplamlar **sadece sabit resimlerde** gösterilir. Sabit resim oynamaz,
+  geri gitmez.
+- GIF'te sadece iki sandık alanı hareket eder; envanter, toplamlar, tur çubuğu ve havuz önceki
+  sabit resimle birebir aynıdır.
+- Bütün GIF kareleri aynı kısa süreli (40 ms), aşırı uzun kare yok. GIF başına ~0,7 MB.
 
 Envanterde her turun numaralı bir yuvası var; sıradaki tur yuvası belirgin, son eklenen item
-nadirlik renginde parlar. Bir sonraki turun GIF'i, önceki tur ekrandayken arka planda hazırlanır.
-Tur başına ~4,5 sn (5'ten fazla kasada ~4 sn), GIF başına ~1 MB. Kareler çizildikçe GIF'e yazılır,
-battle sırasında bot diğer komutlara cevap vermeye devam eder.
+nadirlik renginde parlar, önde olan oyuncunun toplamının yanında yeşil ok çıkar. Sıradaki turun
+GIF'i ve sonuç resmi önceden arka planda hazırlanır; battle sırasında bot diğer komutlara cevap
+vermeye devam eder. Animasyonda bir hata olursa bile oyunculara doğrudan sonuç ekranı gösterilir.
 
-`vs.ts` içindeki `ZAMANLAMA` sabitiyle evre süreleri ve sonucun ekranda kalma süresi ayarlanabilir.
+`vs.ts` içindeki `ZAMANLAMA` sabitiyle sallanma ve sonuç ekranının süreleri ayarlanabilir.
 
 ## Güvenlik notları
 
